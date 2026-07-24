@@ -1,33 +1,3 @@
-create or replace PACKAGE                                                                                     PKG_INT_BRIPACE_NRC AS
-
--- Registra en tabla intermedia SZRSSBP datos del NRC capturados desde el trigger de SSBSECT
-    PROCEDURE p_registra_nrc(
-        p_action            VARCHAR2,
-        p_term_code         VARCHAR2,
-        p_crn               VARCHAR2,
-        p_ptrm_code         VARCHAR2,
-        p_subj_code         VARCHAR2,
-        p_crse_numb         VARCHAR2,
-        p_start_date        DATE,
-        p_crse_title        VARCHAR2,
-        p_max_enrl          NUMBER
-    );
-
-    -- Registra desde la tabla intermedia a la tabla de integracion
-    PROCEDURE p_registra_nrc_int ;
-    
-    -- Inserta datos suplementarios en tabla intermedia ITZSUPL y real.
-    PROCEDURE p_insert_itzsupl;
-
-    FUNCTION get_course_title (
-        p_crn       IN SSBSECT.SSBSECT_CRN%TYPE,
-        p_term_code IN SSBSECT.SSBSECT_TERM_CODE%TYPE
-    )
-    RETURN VARCHAR2;
-
-END PKG_INT_BRIPACE_NRC;
-/
-
 create or replace PACKAGE BODY          PKG_INT_BRIPACE_NRC AS
     
 
@@ -352,7 +322,7 @@ create or replace PACKAGE BODY          PKG_INT_BRIPACE_NRC AS
                'ShowAddressBook' VALUE 'false' FORMAT JSON,
                'Description' VALUE JSON_OBJECT(
                    'Content' VALUE
-                        r.szrssbp_crse_title || '-' ||
+                        v_crse_title || '-' ||
                         r.szrssbp_subj_code  || '-' ||
                         r.szrssbp_crse_numb  || '-' ||
                         'CUPO:' || r.szrssbp_max_enrl,
@@ -423,6 +393,9 @@ create or replace PACKAGE BODY          PKG_INT_BRIPACE_NRC AS
          RETURNING CLOB) AS json_peticion
        INTO l_json
        FROM dual;
+       
+       -- se reemplaza el path null a cadena vacía
+       l_json := REPLACE(l_json, '"Path":null', '"Path":""');
             
     dbms_output.put_line('mensaje 3');
                 ------------------------------------------------------------------
@@ -619,6 +592,8 @@ create or replace PACKAGE BODY          PKG_INT_BRIPACE_NRC AS
          AND B.OP_TYPE = 'CREATE_NRC'
          AND JSON_VALUE(B.RESPONSE, '$[0].response.code') = '200'
          AND JSON_EXISTS(B.RESPONSE,'$[0].response.body.Identifier')
+         AND JSON_VALUE(B.RESPONSE, '$[2].response.code') = '200'
+         AND JSON_VALUE(B.RESPONSE,'$[2].response.body.Status') = 'COMPLETE'
          AND NOT EXISTS
          (
              SELECT 1
@@ -662,7 +637,7 @@ create or replace PACKAGE BODY          PKG_INT_BRIPACE_NRC AS
           UPDATE  ITZBGSP 
             SET STATUS = 'COMPLETED'
           where STATUS='PROCESSED_OK'
-            and OP_TYPE = 'CREATE_TERM'
+            and OP_TYPE = 'CREATE_NRC'
             and ID= I.id_maestro;
             
           UPDATE SZRSSBP
