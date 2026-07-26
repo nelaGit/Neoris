@@ -1,0 +1,313 @@
+TABLE_NAME: INTEGRACION.ITZBGSP
+ID (AUTOGENERADO) SEQUENCIAL
+BUSINESS_LINE -> VARCHAR2(50) - ONLINE/FLEX/CYP
+REQUEST (CLOB) -> JSON
+RESPONSE (CLOB) -> JSON
+CREATE_DATE (TIMESTAMP)
+REQUEST_DATE (TIMESTAMP)
+RESPONSE_DATE (TIMESTAMP)
+OP_TYPE VARCHAR2(100) - CREATE_TERM/UPD_TERM/CREATE_USER/UPD_USER/DEL_USUARIO/CREATE_NRC/UPD_NRC/ENROLLMENT_TEACHER/ENRROLLMENT_STUDENT
+STATUS VARCHAR2(100) - PENDING (BANNER)/PROCESSING (.NET)/PROCESSED_OK/PROCESSED_KO (.NET)/COMPLETED (BANNER)/FAIL (.NET/BANNER)
+
+JSON SIMPLIFICADO:
+
+[
+	{
+		"request": {
+			"id": #,
+			"endpoint": "url completa",
+			"method": "GET/POST/PUT/PATCH/DELETE",
+			"body": { json de la llamada de cada operación}
+			
+		}
+		"response": {
+			"code": #
+			"body": { json respuesta de BS}
+		}
+	},
+	{
+		"request": {}
+		"response": {}
+	},
+	{
+		"request": {}
+		"response": {}
+	},
+	...
+]
+
+
+LECTURA DE REGISTROS A PROCESAR POR .NET: SELECT * FROM INTEGRACION.ITZBGSP WHERE STATUS = 'PENDING' ORDER BY CREATE_DATE;
+
+CREATE_TERM
+
+CREATE_TERM_RQ:
+[
+	{
+		"request": {
+		
+			"id": -> INTEGRACION.ITZBGSP.ID
+			"endpoint": "http://...", GTVSDAX -> EXTERNAL_CODE: ONLINE - INTERNAL_CODE: INSTANAME - INTERNAL_CODE_GROUP: INT_BRIGHTSPACE - COMMENTS + "path", GTVSDAX -> EXTERNAL_CODE: ONLINE - INTERNAL_CODE: CREATE_TERM_ENDPOINT - INTERNAL_CODE_GROUP: INT_BRIGHTSPACE - COMMENTS EJ: POST,/d2l/api/lp/1.60/orgstructure/
+			"method": "GET/POST/PUT/PATCH/DELETE", -> EXTERNAL_CODE: ONLINE - INTERNAL_CODE: CREATE_TERM_ENDPOINT - INTERNAL_CODE_GROUP: INT_BRIGHTSPACE - COMMENTS
+			"body": {
+						"Type": 105, <- VARIABLE GTVSDAX -> EXTERNAL_CODE: ONLINE - INTERNAL_CODE: ORGUNIT_TYPE_SEMESTER - INTERNAL_CODE_GROUP: INT_BRIGHTSPACE - COMMENTS: 105
+						"Name": "Periodo 2026-1A - Smart Online", <- SOBPTRM.SOBPTRM_DESC
+						"Code": "202600-1A", <- SOBPTRM_TERM_CODE + SOBPTRM.SOBPTRM_PTRM_CODE
+
+						"Parents": [
+							6606 <- -> EXTERNAL_CODE: ONLINE - INTERNAL_CODE: ORGUNIT_PARENT - INTERNAL_CODE_GROUP: INT_BRIGHTSPACE - COMMENTS: 6606
+						]
+					}		
+		
+		}
+		response: {}
+		
+	}
+]
+
+EJEMPLO:
+
+[
+	{
+		"request": {
+			"id": 1
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/orgstructure/",
+			"method": "POST",
+			"body": {
+						"Type": 105,
+						"Name": "Periodo 2026-1A - Smart Online",
+						"Code": "202600-1A",
+
+						"Parents": [
+							6606
+						]
+					}
+		}
+	}
+]
+
+DESPUES DEL PROCESAMIENTO HACER UPDATE EN INTEGRACION.ITZBGSP
+UPDATE BY ID -> 
+UPDATE INTEGRACION.ITZBGSP SET
+RESPONSE = "RESPONSE",
+REQUEST_DATE = REQUEST_TIMESTAMP,
+RESPONSE_DATE = RESPONSE_TIMESTAMP,
+STATUS = PROCESSED_OK/PROCESSED_KO
+WHERE ID = ##;
+
+ACTUALIZAR COLUMNA RESPONSE CON:
+[
+	{
+		"request": {
+			"id": 1
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/orgstructure/",
+			"method": "POST",
+			"body": {
+						"Type": 105,
+						"Name": "Periodo 2026-1A - Smart Online",
+						"Code": "202600-1A",
+
+						"Parents": [
+							6606
+						]
+					}
+		}
+		response: {
+			"code": 200,			
+			"body": {
+				"Identifier": "6907",
+				"Name": "Periodo 2026-1A - Smart Online",
+				"Code": "202600-1A",
+				"Path": "/content/enforced/6907-202600-1A/",
+				"Type": {
+					"Id": 105,
+					"Code": "Periodo",
+					"Name": "Periodo"
+				}
+			}
+		}		
+	}
+]
+
+CREATE_NRC:
+
+REQUEST:
+
+[
+	{
+		"request": {
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/courses/"
+			"method": "POST"
+			"body": {
+				"Name": "Sección 4 (CRN 12039)", -> SSBSECT.SSBSECT_CRSE_TITLE + ( + SSBSECT.SSBSECT_CRN + )
+				"Code": "12039-2026001A", -> SSBSECT.SSBSECT_CRN + '-' + SSBSECT.SSBSECT_TERM_CODE + '-' + SSBSECT.SSBSECT_PTRM_CODE
+				"Path": "",
+				"CourseTemplateId": 6688, -> DATO SUPLEMENTARIO DE SCACRSE ID_MASTER_BS
+				"SemesterId": 6902, // -> DATO SUPLEMENTARIO DEL ID DEL PERIODO
+				"StartDate": "2026-06-01T08:00:00.000Z", -> SSBSECT_PTRM_START_DATE (OJO CON EL FORMATO)
+				"EndDate": null,
+				"LocaleId": 9, // obligatorio 1 - ingles / 9 - Español
+				"ForceLocale": false, // obligatorio
+				"ShowAddressBook": false, // obligatorio
+				"Description": {  "Content": "PRUEBA 4 Sección creada desde Banner SSASECT. Periodo 202600-1A. Cupo 60", -> SSBSECT.SSBSECT_CRSE_TITLE + '-' + SSBSECT_SUBJ_CODE + '-' + SSBSECT_CRSE_NUMB +  ' CUPO: ' + SSBSECT_MAX_ENRL
+					"Type": "Text" },
+				"CanSelfRegister": null, // optional
+				"IsActive": true
+			}
+		}
+		"response: {
+			"code": 200,			
+			"body": {
+				{
+					"LocaleId": 9,
+					"ForceLocale": false,
+					"Identifier": "6904",
+					"Name": "Sección 001 (CRN 12035)",
+					"Code": "12035-2026001A",
+					"IsActive": true,
+					"CanSelfRegister": false,
+					"Description": {
+						"Text": "Sección creada desde Banner SSASECT. Periodo 202600-1A. Cupo 50",
+						"Html": ""
+					},
+					"Path": "/content/enforced/6904-12035-2026001A/",
+					"StartDate": "2026-06-01T08:00:00.000Z",
+					"EndDate": null,
+					"CourseTemplate": {
+						"Identifier": "6896",
+						"Name": "LorENG_V1",
+						"Code": "T_1000"
+					},
+					"Semester": {
+						"Identifier": "6902",
+						"Name": "Periodo 2026-1A - Smart Online",
+						"Code": "202600-1A"
+					},
+					"Department": null,
+					"ShowAddressBook": false
+				}
+			}
+		}
+	},
+	{
+		"request": {
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/le/1.94/import/{response.body.Identifier}/copy/" -> ID RESPONSE ANTERIOR response.body.Identifier
+			"method": "POST"
+			"body": {
+				"SourceOrgUnitId": 6688, // id de curso master semilla, el que tiene los contenidos -> DATO SUPLEMENTARIO DE SCACRSE ID_TEMPLATE_BS
+				"Components": null,
+				"CallbackUrl": null,
+				"DaysToOffsetDates": 0,
+				"HoursToOffsetDates": 0,
+				"OffsetByStartDateDifference": 0
+			}
+		}
+		"response: {
+			"code": 200,			
+			"body": {				
+				"JobToken": "69"				
+			}
+		}
+	},
+	{
+		"request": {
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/le/1.94/import/{response.body.Identifier}/copy/{response.body.JobToken}" -> IDs RESPONSEs ANTERIORES
+			"method": "GET"
+			"body": {
+				"SourceOrgUnitId": 6688, // id de curso master semilla, el que tiene los contenidos -> DATO SUPLEMENTARIO DE SCACRSE ID_TEMPLATE_BS
+				"Components": null,
+				"CallbackUrl": null,
+				"DaysToOffsetDates": 0,
+				"HoursToOffsetDates": 0,
+				"OffsetByStartDateDifference": 0
+			}
+		}
+		"response: {
+			"code": 200,			
+			"body": {				
+				 "Status": "COMPLETE"/"FAIL"			
+			}
+		}
+	}
+]
+
+REQUEST ERROR:
+
+[
+  {
+	"error" : "...."
+  },
+  {
+	"error" : "...."
+  }	
+]
+
+CREATE_USER
+
+REQUEST:
+
+{
+	"request": {
+		"id": #
+		"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/"
+		"method": "POST"
+		"body": {
+			"OrgDefinedId": "99887709", //PIDM
+			"FirstName": "Jose", // NOMBRE COMPLETO - obligatorio
+			"MiddleName": null, // siempre null - opcional
+			"LastName": "Ramirez", // APELLIDOS - obligatorio max 64
+			"ExternalEmail": "abcd@smat.com", // CORREO CEIN PREFERIDO
+			"UserName": "abcd@smat.com", // CORREO CEIN PREFERIDO
+			"RoleId": 109, // obligatorio - PARA DOCENTES DEPENDE DE DATO SUPLEMENTARIO SIAINST SMART_ONLINE VALOR ONLINE/ASISTENTE -> SE TOMA DE VARIABLE GTVSDAX ONLINE_ROL_DOC_ONLINE / ONLINE_ROL_DOC_ASISTENTE - PARA ESTUDIANTES SE TOMA DE VARIABLE GTVSDAX ONLINE_ROL_ESTUDIANTE
+			"IsActive": true, // por dafault true SIEMPRE true
+			"SendCreationEmail": false // enviar a false SIEMPRE FALSE   
+		}
+	},
+	"response" : null
+}
+
+REPONSE:
+
+{
+	"request": {
+		"id": #
+		"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/"
+		"method": "POST"
+		"body": {
+			"OrgDefinedId": "99887709", //PIDM
+			"FirstName": "Jose", // NOMBRE COMPLETO - obligatorio
+			"MiddleName": null, // siempre null - opcional
+			"LastName": "Ramirez", // APELLIDOS - obligatorio max 64
+			"ExternalEmail": "abcd@smat.com", // CORREO CEIN PREFERIDO
+			"UserName": "abcd@smat.com", // CORREO CEIN PREFERIDO
+			"RoleId": 109, // obligatorio - PARA DOCENTES DEPENDE DE DATO SUPLEMENTARIO SIAINST SMART_ONLINE VALOR ONLINE/ASISTENTE -> SE TOMA DE VARIABLE GTVSDAX ONLINE_ROL_DOC_ONLINE / ONLINE_ROL_DOC_ASISTENTE - PARA ESTUDIANTES SE TOMA DE VARIABLE GTVSDAX ONLINE_ROL_ESTUDIANTE
+			"IsActive": true, // por dafault true SIEMPRE true
+			"SendCreationEmail": false // enviar a false SIEMPRE FALSE   
+		}
+	},
+	"response" : {
+		"code": 200,
+		"body": {
+			"OrgId": 6606,
+			"UserId": 2739, // GUARDAR EN DATO SUPLEMENTARIO 
+			"FirstName": "Juan",
+			"MiddleName": null,
+			"LastName": "Rojas",
+			"UserName": "ing.jonathan.patino@gmail.com",
+			"ExternalEmail": "ing.jonathan.patino@gmail.com",
+			"OrgDefinedId": "998877",
+			"UniqueIdentifier": "ing.jonathan.patino@gmail.com",
+			"Activation": {
+				"IsActive": true
+			},
+			"DisplayName": "Juan Rojas",
+			"LastAccessedDate": null,
+			"FirstLoginDate": null,
+			"Pronouns": ""
+	}
+}
+
+
