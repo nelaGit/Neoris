@@ -335,7 +335,7 @@ REQUEST:
 	}
 ]
 
-REPONSE:
+RESPONSE:
 
 [
 	{
@@ -362,4 +362,39 @@ REPONSE:
 	}
 ]
 
+DELETE_ENROLLMENT
 
+REQUEST: 
+[
+	{
+		"request":{
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/enrollments/{ID DE USUARIO}/orgUnits/{ID NRC}",
+			"method": "DELETE",
+			"body": {}
+		},
+		"response: null
+	}
+]
+
+RESPONSE:
+
+[
+	{
+		"request":{
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/enrollments/users/{ID DE USUARIO}/orgUnits/{ID NRC}",
+			"method": "DELETE",
+			"body": {}
+		},
+		"response: {
+			"code": 200,
+			"body": {
+				"OrgUnitId": 6904,
+				"UserId": 2744,
+				"RoleId": 110,
+				"IsCascading": false
+			}
+		}
+	}
+]
