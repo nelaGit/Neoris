@@ -245,7 +245,7 @@ REQUEST ERROR:
   }	
 ]
 
-CREATE_USER
+CREATE_USER_TEACHER
 
 - ONLINE_ROL_DOC_ONLINE = 109
 - ONLINE_ROL_DOC_ASISTENTE = 114
@@ -255,9 +255,9 @@ REQUEST:
 
 {
 	"request": {
-		"id": #
-		"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/"
-		"method": "POST"
+		"id": #,
+		"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/",
+		"method": "POST",
 		"body": {
 			"OrgDefinedId": "99887709", //PIDM
 			"FirstName": "Jose", // NOMBRE COMPLETO - obligatorio
@@ -277,9 +277,9 @@ REPONSE:
 
 {
 	"request": {
-		"id": #
-		"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/"
-		"method": "POST"
+		"id": #,
+		"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/",
+		"method": "POST",
 		"body": {
 			"OrgDefinedId": "99887709", //PIDM
 			"FirstName": "Jose", // NOMBRE COMPLETO - obligatorio
@@ -313,5 +313,53 @@ REPONSE:
 			"Pronouns": ""
 	}
 }
+
+ENROLLMENT_TEACHER
+
+REQUEST:
+
+[
+	{
+		"request":{
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/enrollments/",
+			"method": "POST",
+			"body": {
+				"OrgUnitId": 6904, //id nrc
+				"UserId": 2744, // id del usuario
+				"RoleId": 110, // rol PARA ONLINE PUEDE SER ONLINE/ASISTENTE SE SACA DE GTVSDAX
+				"SendEnrollmentEmail": false
+			}
+		},
+		"response: null
+	}
+]
+
+REPONSE:
+
+[
+	{
+		"request":{
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/enrollments/",
+			"method": "POST",
+			"body": {
+				"OrgUnitId": 6904, //id nrc
+				"UserId": 2744, // id del usuario
+				"RoleId": 110, // rol PARA ONLINE PUEDE SER ONLINE/ASISTENTE SE SACA DE GTVSDAX
+				"SendEnrollmentEmail": false
+			}
+		},
+		"response: {
+			"code": 200,
+			"body": {
+				"OrgUnitId": 6904,
+				"UserId": 2744,
+				"RoleId": 110,
+				"IsCascading": false
+			}
+		}
+	}
+]
 
 
