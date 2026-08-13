@@ -36,7 +36,8 @@ RETURN VARCHAR2;
 END PKG_INT_BRIPACE_TERM;
 /
 
-create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
+
+create or replace PACKAGE BODY              PKG_INT_BRIPACE_TERM AS
     
 
     PROCEDURE p_registra_periodo(
@@ -101,7 +102,7 @@ create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
                 USER,
                 SYSDATE
             );
-
+/*
     ELSIF p_action = 'UPDATE' THEN
     
         UPDATE integracion.SZRTMBP
@@ -125,7 +126,7 @@ create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
                SZRTMBP_ACTIVITY_DATE = SYSDATE
          WHERE SZRTMBP_TERM_CODE = p_term_code
            AND SZRTMBP_PTRM_CODE = p_ptrm_code;
-
+*/
     END IF;
     
     -- llama el procedure de integracion. Pobla los datos a la tabla principal itzbgsp
@@ -146,6 +147,8 @@ create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
         v_org_type         GTVSDAX.GTVSDAX_COMMENTS%TYPE;
         v_org_parent       GTVSDAX.GTVSDAX_COMMENTS%TYPE;
         v_seq              number;
+        
+        v_error           VARCHAR2(200);
     
     BEGIN
     
@@ -194,7 +197,9 @@ create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
             SELECT ROWID rid,
                    szrtmbp_desc,
                    szrtmbp_term_code,
-                   szrtmbp_ptrm_code
+                   szrtmbp_ptrm_code,
+                   SZRTMBP_STATE,
+                   SZRTMBP_ID_MAESTRO
               FROM szrtmbp
              WHERE szrtmbp_state = 'NEW'
         )
@@ -205,9 +210,14 @@ create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
                 ------------------------------------------------------------------
                 -- Generar JSON
                 ------------------------------------------------------------------
-         
+         -- La secuencia es para el state NEW porque el INCOMPLETE ya tiene seq
+        IF r.SZRTMBP_STATE = 'NEW' THEN
            v_seq := INTEGRACION.SEQ_ITZBGSP.NEXTVAL;
-                  
+        ELSE
+            v_seq := r.SZRTMBP_ID_MAESTRO;
+        END IF;
+        
+        -- Con state INCOMPLETE le capturo la secuencia       
           SELECT JSON_ARRAYAGG(
                    JSON_OBJECT(
                        'request' VALUE JSON_OBJECT(
@@ -269,9 +279,11 @@ create or replace PACKAGE BODY  PKG_INT_BRIPACE_TERM AS
     
             EXCEPTION
                 WHEN OTHERS THEN
+                   v_error := sqlerrm;
     
                     UPDATE szrtmbp
-                       SET szrtmbp_state = 'FAIL'
+                       SET szrtmbp_state = 'FAIL',
+                         SZRTMBP_STATE_DET = v_error
                      WHERE ROWID = r.rid;
     
  END;

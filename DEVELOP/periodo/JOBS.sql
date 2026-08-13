@@ -25,6 +25,20 @@ BEGIN
    );
 END;
 
+BEGIN
+   DBMS_SCHEDULER.CREATE_JOB (
+      job_name        => 'JOB_REGISTRA_DOC_INT',
+      job_type        => 'STORED_PROCEDURE',
+      job_action      => 'PKG_INT_BRIPACE_PERS.p_registra_persona_int',
+      start_date      => SYSTIMESTAMP,
+      repeat_interval => 'FREQ=SECONDLY;INTERVAL=10',
+      enabled         => TRUE,
+      auto_drop       => FALSE,
+      comments        => 'Procesa registros NEW de la tabla SZRPEBP'
+   );
+END;
+
+
 
 
 -- CONSULTAR LOS JOBS

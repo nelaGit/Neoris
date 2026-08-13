@@ -38,6 +38,9 @@ BEGIN
 
          WHEN 'CREATE_NRC' THEN
             integracion.PKG_INT_BRIPACE_NRC.p_insert_itzsupl;
+            
+        WHEN 'CREATE_USER' THEN
+            integracion.PKG_INT_BRIPACE_PERS.p_insert_itzsupl;
 
       END CASE;
 

@@ -1,0 +1,1 @@
+create table PRGNREP.IVZBGSP as select * from integracion.ITZBGSP;
