@@ -362,14 +362,14 @@ RESPONSE:
 	}
 ]
 
-DELETE_ENROLLMENT
+DELETE_ENROLLMENT_TEACHER
 
 REQUEST: 
 [
 	{
 		"request":{
 			"id": #
-			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/enrollments/{ID DE USUARIO}/orgUnits/{ID NRC}",
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/enrollments/users/{ID DE USUARIO BRIGHTSPACE}/orgUnits/{ID NRC BRIGHTSPACE}",
 			"method": "DELETE",
 			"body": {}
 		},
