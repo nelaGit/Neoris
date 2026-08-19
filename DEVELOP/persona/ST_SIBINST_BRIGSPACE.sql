@@ -5,6 +5,7 @@ COMPOUND TRIGGER
 
    g_pidm SATURN.SIBINST.SIBINST_PIDM%TYPE;
    g_term_code SATURN.SIBINST.SIBINST_TERM_CODE_EFF%TYPE;
+   g_fcst_code SATURN.SIBINST.SIBINST_FCST_CODE%TYPE;
 
    ----------------------------------------------------------------------------
    -- AFTER EACH ROW
@@ -16,6 +17,7 @@ COMPOUND TRIGGER
       IF :NEW.SIBINST_SCHD_IND = 'Y' THEN
          g_pidm := :NEW.SIBINST_PIDM;
          g_term_code := :NEW.SIBINST_TERM_CODE_EFF;
+		 g_fcst_code := :NEW.SIBINST_FCST_CODE;
       END IF;
 
    END AFTER EACH ROW;
@@ -25,7 +27,7 @@ COMPOUND TRIGGER
    ----------------------------------------------------------------------------
    AFTER STATEMENT IS
    BEGIN
-      IF g_pidm IS NOT NULL THEN
+      IF g_pidm IS NOT NULL AND g_fcst_code = 'AC' THEN
          PKG_INT_BRIPACE_PERS.p_registra_persona(g_pidm, g_term_code);
       END IF;
    END AFTER STATEMENT;
