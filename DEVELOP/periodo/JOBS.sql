@@ -39,6 +39,20 @@ BEGIN
 END;
 
 
+BEGIN
+   DBMS_SCHEDULER.CREATE_JOB (
+      job_name        => 'JOB_REGISTRA_ENROLL_INT',
+      job_type        => 'STORED_PROCEDURE',
+      job_action      => 'PKG_INT_BRIPACE_ENROLL.p_registra_enroll_doc_int',
+      start_date      => SYSTIMESTAMP,
+      repeat_interval => 'FREQ=SECONDLY;INTERVAL=10',
+      enabled         => TRUE,
+      auto_drop       => FALSE,
+      comments        => 'Procesa registros NEW, DEL de la tabla SZREDBP'
+   );
+END;
+
+
 
 
 -- CONSULTAR LOS JOBS
