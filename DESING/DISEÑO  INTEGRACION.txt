@@ -398,3 +398,35 @@ RESPONSE:
 		}
 	}
 ]
+
+INACTIVE_USER
+
+REQUEST: 
+[
+	{
+		"request":{
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/{ID DE USUARIO BRIGHTSPACE}/activation",
+			"method": "PUT",
+			"body": { "IsActive": false }
+		},
+		"response: null
+	}
+]
+
+RESPONSE:
+
+[
+	{
+		"request":{
+			"id": #
+			"endpoint": "https://smartonlinetest.brightspace.com/d2l/api/lp/1.60/users/{ID DE USUARIO BRIGHTSPACE}/activation",
+			"method": "PUT",
+			"body": { "IsActive": false }
+		},
+		"response: {
+			"code": 200, -> SI ES 200 PONER EN EL LOG USUARIO INACTIVO PIDM / SINO PONER ERROR AL INACTIVAR USUARIO
+			"body": { "IsActive": false }
+		}
+	}
+]
