@@ -1,34 +1,4 @@
-create or replace PACKAGE                                                                                     PKG_INT_BRIPACE_NRC AS
-
--- Registra en tabla intermedia SZRSSBP datos del NRC capturados desde el trigger de SSBSECT
-    PROCEDURE p_registra_nrc(
-        p_action            VARCHAR2,
-        p_term_code         VARCHAR2,
-        p_crn               VARCHAR2,
-        p_ptrm_code         VARCHAR2,
-        p_subj_code         VARCHAR2,
-        p_crse_numb         VARCHAR2,
-        p_start_date        DATE,
-        p_crse_title        VARCHAR2,
-        p_max_enrl          NUMBER
-    );
-
-    -- Registra desde la tabla intermedia a la tabla de integracion
-    PROCEDURE p_registra_nrc_int ;
-    
-    -- Inserta datos suplementarios en tabla intermedia ITZSUPL y real.
-    PROCEDURE p_insert_itzsupl;
-
-    FUNCTION get_course_title (
-        p_crn       IN SSBSECT.SSBSECT_CRN%TYPE,
-        p_term_code IN SSBSECT.SSBSECT_TERM_CODE%TYPE
-    )
-    RETURN VARCHAR2;
-
-END PKG_INT_BRIPACE_NRC;
-/
-
-create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
+create or replace PACKAGE BODY                                                          PKG_INT_BRIPACE_NRC AS
     
 
     PROCEDURE p_registra_nrc(
@@ -45,47 +15,89 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
     BEGIN
 
        IF p_action = 'INSERT' THEN
-   
-        INSERT INTO integracion.SZRSSBP (
-        SZRSSBP_TERM_CODE,
-        SZRSSBP_CRN,
-        SZRSSBP_PTRM_CODE,
-        SZRSSBP_SUBJ_CODE,
-        SZRSSBP_CRSE_NUMB,
-        SZRSSBP_PTRM_START_DATE,
-        SZRSSBP_CRSE_TITLE,
-        SZRSSBP_MAX_ENRL,
-        SZRSSBP_LINE_NEG,
-        SZRSSBP_STATE,
-        SZRSSBP_OPERACION,
-        SZRSSBP_VERSION,
-        SZRSSBP_DATA_ORIGIN,
-        SZRSSBP_USER_ID,
-        SZRSSBP_ACTIVITY_DATE
-    )
-    SELECT
-        p_term_code,
-        p_crn,
-        p_ptrm_code,
-        p_subj_code,
-        p_crse_numb,
-        p_start_date,
-        p_crse_title,
-        p_max_enrl,
-        NULL,
-        'NEW',
-        'I',
-        1,
-        'SSRMEET',
-        USER,
-        SYSDATE
-    FROM dual
-    WHERE NOT EXISTS (
-        SELECT 1
-          FROM integracion.SZRSSBP
+    --validar si se mete la misma tabla u otra para manejar los periodos/ mejor otra tabla
+        MERGE INTO integracion.SZRSSBP tgt
+        USING (
+            SELECT 
+                p_term_code   AS term_code,
+                p_crn         AS crn
+            FROM dual
+        ) src
+        ON (
+            tgt.SZRSSBP_TERM_CODE = src.term_code
+            AND tgt.SZRSSBP_CRN = src.crn
+        )
+        
+        WHEN MATCHED THEN
+            UPDATE SET
+                tgt.SZRSSBP_CRSE_TITLE       = p_crse_title,
+                tgt.SZRSSBP_PTRM_START_DATE  = p_start_date,
+                tgt.SZRSSBP_MAX_ENRL      = p_max_enrl,
+                tgt.SZRSSBP_STATE         = 'NEW',
+                tgt.SZRSSBP_OPERACION     = 'U',
+                tgt.SZRSSBP_VERSION       = NVL(tgt.SZRSSBP_VERSION,0) + 1,
+                tgt.SZRSSBP_USER_ID       = USER,
+                tgt.SZRSSBP_ACTIVITY_DATE = SYSDATE
+        
+        WHEN NOT MATCHED THEN
+            INSERT (
+                SZRSSBP_TERM_CODE,
+                SZRSSBP_CRN,
+                SZRSSBP_PTRM_CODE,
+                SZRSSBP_SUBJ_CODE,
+                SZRSSBP_CRSE_NUMB,
+                SZRSSBP_PTRM_START_DATE,
+                SZRSSBP_CRSE_TITLE,
+                SZRSSBP_MAX_ENRL,
+                SZRSSBP_LINE_NEG,
+                SZRSSBP_STATE,
+                SZRSSBP_OPERACION,
+                SZRSSBP_VERSION,
+                SZRSSBP_DATA_ORIGIN,
+                SZRSSBP_USER_ID,
+                SZRSSBP_ACTIVITY_DATE
+            )
+            VALUES (
+                p_term_code,
+                p_crn,
+                p_ptrm_code,
+                p_subj_code,
+                p_crse_numb,
+                p_start_date,
+                p_crse_title,
+                p_max_enrl,
+                NULL,
+                'NEW',
+                'I',
+                1,
+                'SSBSECT',
+                USER,
+                SYSDATE
+            );
+
+    ELSIF p_action = 'UPDATE' THEN
+
+        UPDATE integracion.SZRSSBP
+           SET SZRSSBP_CRSE_TITLE       = p_crse_title,
+                SZRSSBP_PTRM_START_DATE  = p_start_date,
+                SZRSSBP_MAX_ENRL      = p_max_enrl,
+                SZRSSBP_STATE         = 'NEW',
+                SZRSSBP_OPERACION     = 'U',
+                SZRSSBP_VERSION       = NVL(SZRSSBP_VERSION,0) + 1,
+                SZRSSBP_USER_ID       = USER,
+                SZRSSBP_ACTIVITY_DATE = SYSDATE               
          WHERE SZRSSBP_TERM_CODE = p_term_code
-           AND SZRSSBP_CRN       = p_crn
-    );
+           AND SZRSSBP_CRN = p_crn;
+
+    ELSIF p_action = 'DELETE' THEN
+    
+        UPDATE integracion.SZRSSBP
+           SET SZRSSBP_STATE         = 'D',
+               SZRSSBP_VERSION       = NVL(SZRSSBP_VERSION,0) + 1,
+               SZRSSBP_USER_ID       = USER,
+               SZRSSBP_ACTIVITY_DATE = SYSDATE
+         WHERE SZRSSBP_TERM_CODE = p_term_code
+           AND SZRSSBP_PTRM_CODE = p_ptrm_code;
 
     END IF;
   
@@ -124,7 +136,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
         v_estado          VARCHAR2(10);
         
         v_error           VARCHAR2(200);
-        v_error_message VARCHAR2(1000);
     
     BEGIN
     
@@ -419,21 +430,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
         If (v_id_periodo_bs IS NULL) OR (v_id_template_bs IS NULL) OR (v_id_master_bs IS NULL) Then 
           v_estado := 'INCOMPLETE'; -- Este estado se va a la tabla JSON
           
-          v_error_message := 'Datos inexistentes en datos suplementarios: ';
-
-            IF v_id_periodo_bs IS NULL THEN
-                v_error_message := v_error_message || 'IDENTIFIER_PERIODO, ';
-            END IF;
-    
-            IF v_id_template_bs IS NULL THEN
-                v_error_message := v_error_message || 'ID_TEMPLATE_BS, ';
-            END IF;
-    
-            IF v_id_master_bs IS NULL THEN
-                v_error_message := v_error_message || 'ID_MASTER_BS ';
-            END IF;
-        
-          
            PKG_INT_BRIPACE_TERM.p_registra_error_log(
             p_business_line => 'ONLINE',
             p_op_type       => 'CREATE_NRC',
@@ -442,7 +438,7 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
             p_crn           => r.SZRSSBP_CRN,
             p_pidm          => NULL,
             p_error_code    => 'TEMPLATE_NOT_FOUND',
-            p_error_message => v_error_message
+            p_error_message => 'Datos inexistentes en datos suplementarios:IDENTIFIER_PERIODO, ID_TEMPLATE_BS, ID_MASTER_BS para la parte de periodo '||r.szrssbp_ptrm_code
         );
     
           
@@ -582,7 +578,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
         v_rid              varchar2(18):=null;
         r_gorsdav_rowid   varchar2(18):=null;
         v_registros number;
-        v_error_message VARCHAR2(1000);
   
   -- mer tmp hay que meter un loop aqui para que vaya insertando en ITZSUPL y luego en datos suplementarios
     Cursor c_supl is
@@ -650,46 +645,31 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
      --  COMMIT;
        
        For i in c_supl LOOP
-         BEGIN
+       
+         dbms_output.put_line('inicia el for..');
          
-              SELECT ROWID into v_rid  FROM SSBSECT WHERE SSBSECT_TERM_CODE=i.term_code AND SSBSECT_CRN= i.crn;
-              
-               r_pk_parenttab:=gp_goksdif.f_get_pk('SSBSECT',v_rid);
-               
-                select max(a.rowid) into r_gorsdav_rowid 
-                 from  gorsdav  a
-                 where a.gorsdav_table_name = 'SSBSECT'
-                 and a.gorsdav_attr_name = 'ID_LMS_BRIGHTSPACE'
-                 and a.gorsdav_disc = '1'
-                 and a.gorsdav_pk_parenttab = r_pk_parenttab;
+          SELECT ROWID into v_rid  FROM SSBSECT WHERE SSBSECT_TERM_CODE=i.term_code AND SSBSECT_CRN= i.crn;
           
-               
-               -- aqui se inserta el dato suplementario original de banner
-               gp_goksdif.p_set_attribute('SSBSECT'
-                                         ,'ID_LMS_BRIGHTSPACE'
-                                         ,'1'--1 CUANDO NO DEPENDE DE UNA LISTA DE VALORES, DE LO CONTRARIO SE TRAE EL CODE DE LA TABLA DE VALIDACI??N
-                                         ,r_pk_parenttab
-                                         ,r_gorsdav_rowid
-                                         ,'VARCHAR2'
-                                         ,i.valor
-                                         );
-         EXCEPTION
-           WHEN OTHERS THEN
-             v_error_message:= 'Error en la insercion de los datos suplementarios en tabla SSBSECT del atributo ID_LMS_BRIGHTSPACE';
-           -- LOG DE ERRORES
-               PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                p_business_line => 'ONLINE',
-                p_op_type       => 'CREATE_NRC_SUPL',
-                p_term_code     => i.term_code,
-                p_ptrm_code     => i.ptrm_code,
-                p_crn           => i.crn,
-                p_pidm          => NULL,
-                p_error_code    => 'ERR_DATOS_SUPLEMENTARIOS',
-                p_error_message => v_error_message
-        );
-             --CONTINUE;
+           r_pk_parenttab:=gp_goksdif.f_get_pk('SSBSECT',v_rid);
            
-         END;
+            select max(a.rowid) into r_gorsdav_rowid 
+             from  gorsdav  a
+             where a.gorsdav_table_name = 'SSBSECT'
+             and a.gorsdav_attr_name = 'ID_LMS_BRIGHTSPACE'
+             and a.gorsdav_disc = '1'
+             and a.gorsdav_pk_parenttab = r_pk_parenttab;
+      
+       dbms_output.put_line('va a insertar dato supl.');
+           
+           -- aqui se inserta el dato suplementario original de banner
+           gp_goksdif.p_set_attribute('SSBSECT'
+                                     ,'ID_LMS_BRIGHTSPACE'
+                                     ,'1'--1 CUANDO NO DEPENDE DE UNA LISTA DE VALORES, DE LO CONTRARIO SE TRAE EL CODE DE LA TABLA DE VALIDACI??N
+                                     ,r_pk_parenttab
+                                     ,r_gorsdav_rowid
+                                     ,'VARCHAR2'
+                                     ,i.valor
+                                     );
            
           UPDATE  ITZBGSP 
             SET STATUS = 'COMPLETED'
@@ -704,22 +684,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
               AND SZRSSBP_CRN = i.crn
               AND SZRSSBP_ID_MAESTRO = i.id_maestro;
               
-              
-           IF SQL%ROWCOUNT = 1 THEN   
-             v_error_message:= 'NRC creado correctamente';
-             
-           PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                p_business_line => 'ONLINE',
-                p_op_type       => 'CREATE_NRC',
-                p_term_code     => i.term_code,
-                p_ptrm_code     => i.ptrm_code,
-                p_crn           => i.crn,
-                p_pidm          => NULL,
-                p_state           => 'OK',
-                p_error_code    => 'OK',
-                p_error_message => v_error_message);
-            END IF;  
-            
       End Loop;
       
    --   COMMIT;

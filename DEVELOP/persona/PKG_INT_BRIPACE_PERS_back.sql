@@ -1,52 +1,11 @@
-create or replace PACKAGE                                           PKG_INT_BRIPACE_PERS AS
-
--- Registra en tabla intermedia SZRPEBP datos del periodo capturados desde el trigger de DOCENTES******
-    PROCEDURE p_registra_persona(
-        p_pidm         NUMBER,
-        p_term_code    VARCHAR2
-    );
-
--- Registra desde la tabla intermedia a la tabla de integracion
-PROCEDURE p_registra_persona_int ;
-
-
--- Inserta datos suplementarios en tabla intermedia ITZSUPL
-PROCEDURE p_insert_itzsupl;
-
-
--- Activa, inactiva docentes de SIAINST
- PROCEDURE p_act_inact_pers(
-        p_pidm         NUMBER,
-        p_term_code    VARCHAR2,
-        p_estado_doc   VARCHAR2);
-        
-        
-        
--- Funcion que retorna el valor de comments de la tabla GTVSDAX
-FUNCTION f_get_gtvsdax (
-    p_external_code       IN GTVSDAX.GTVSDAX_EXTERNAL_CODE%TYPE,
-    p_internal_code       IN GTVSDAX.GTVSDAX_INTERNAL_CODE%TYPE,
-    p_internal_code_group IN GTVSDAX.GTVSDAX_INTERNAL_CODE_GROUP%TYPE
-)
-RETURN GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-
--- Retorna el valor de datos suplementarios 
-FUNCTION fn_get_gorsdav_value (
-    p_table_name   IN gorsdav.gorsdav_table_name%TYPE,
-    p_attr_name    IN gorsdav.gorsdav_attr_name%TYPE,
-    p_pk_parenttab IN VARCHAR2
-)
-RETURN VARCHAR2;
-
-END PKG_INT_BRIPACE_PERS;
-
-create or replace PACKAGE BODY                                                              PKG_INT_BRIPACE_PERS AS  
+create or replace PACKAGE BODY                                                  PKG_INT_BRIPACE_PERS AS  
 
     PROCEDURE p_registra_persona(
         p_pidm         NUMBER,
         p_term_code    VARCHAR2
     ) IS
 	
+	--v_line_neg VARCHAR2(20);
 	v_rol	   VARCHAR2(20);
     r_pk_parenttab    gobsdtb.gobsdtb_pk_dynsql%TYPE;
     v_rid              varchar2(18):=null;
@@ -55,8 +14,6 @@ create or replace PACKAGE BODY                                                  
     v_per_doc    VARCHAR2(6);
     v_per_online VARCHAR2(6);
     v_existe_doc NUMBER;
-    v_existe_inf_ad number;
-    v_id VARCHAR2(9);
 
     BEGIN
     -- Valida que el periodo registrado sea el de la variable GTVSDAX
@@ -67,9 +24,20 @@ create or replace PACKAGE BODY                                                  
                 'DEV_INT_BRIGTHSPACE'
             );
     
-    dbms_output.put_line('registra_per. v_per_doc: '||v_per_doc);
-    
 	   IF v_per_doc = p_term_code THEN -- si el periodo de gtvsdax es el periodo del docente de sianst entonces se va en la integracion
+        
+        -- 
+        -- Validacion del periodo que sea ONLINE
+         v_per_online:= pkg_int_bripace_term.f_get_gtvsdax(
+                    'ONLINE',
+                    'PERIODO',
+                    'DEV_INT_BRIGTHSPACE'
+                );
+        
+        -- Se valida que las 2 ultimas posiciones sea igual al periodo parametrizado en GTVSDAX
+       -- IF v_per_online = SUBSTR(p_term_code,5,2) Then
+      -- IF v_per_doc = p_term_code THEN-- SUBSTR(p_term_code,5,2) Then
+         -- v_line_neg:= 'ON'; -- Por ahora se trabajará en solo la linea ONLINE
         
             SELECT ROWID into v_rid  
               FROM SIBINST 
@@ -77,51 +45,18 @@ create or replace PACKAGE BODY                                                  
              
               r_pk_parenttab:=gp_goksdif.f_get_pk('SIBINST',v_rid);
              
-              v_rol:=   UPPER(TRIM(PKG_INT_BRIPACE_PERS.fn_get_gorsdav_value(
+              v_rol:=   PKG_INT_BRIPACE_PERS.fn_get_gorsdav_value(
                                         'SIBINST', 'SMART_ONLINE', 
-                                        r_pk_parenttab)));
-                                        
-            v_id := GB_COMMON.F_GET_ID(p_pidm);
-  
-    
-    
-                
-                
-                -- Valida si tiene informacion adicional en spaiden
-                 SELECT COUNT(1) 
-                      INTO v_existe_inf_ad 
-                      FROM  GORADID
-                      WHERE GORADID_PIDM = p_pidm
-                        AND GORADID_ADID_CODE= 'LMBO';
-                        
+                                        r_pk_parenttab);
             
-    dbms_output.put_line('registra_per. v_rol: '||v_rol||' v_existe_inf_ad '||v_existe_inf_ad);
-               
-               -- Si el rol es ON, AS y no tiene informacion adicional, se debe crear en la integracion
-               IF v_rol IN ('ON', 'AS') AND v_existe_inf_ad = 0 THEN
-                -- IF v_existe_doc = 0   THEN -- SI NO existe y tiene DATO SUPLEMENTARIO ON o AS, debe insertar en tabla intermedia
-                
-                           -- validamos si el docente ya existe en la tabla intermedia
+              
+               -- validamos si el docente ya existe en la tabla intermedia
                select count(*) into v_existe_doc
                  from SZRPEBP 
                 where SZRPEBP_PIDM = p_pidm;
-                
-                IF v_existe_doc >= 1 THEN
-                  v_error := 'El docente '|| v_id ||' ya existe en la integración';
-                
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => p_term_code,
-                        p_pidm          => p_pidm,
-                        p_error_code    => 'CREATE_USER_ERR',
-                        p_error_message => v_error);
-                  RETURN; -- SI EXISTE EL DOCENTE SE SALE
-                END IF;
                
+               IF v_existe_doc = 0 AND v_rol IS NOT NULL THEN -- SI NO existe y tiene DATO SUPLEMENTARIO ONLINE, debe insertar en tabla intermedia
                
-    dbms_output.put_line(' ENTRA PRIMER IF');
-    
                    BEGIN
                         INSERT INTO SZRPEBP(
                             SZRPEBP_PIDM,
@@ -147,60 +82,19 @@ create or replace PACKAGE BODY                                                  
                             USER,
                             SYSDATE
                         );
-                EXCEPTION WHEN OTHERS THEN            
+                EXCEPTION WHEN OTHERS THEN
+                --  NULL; -- MER TMP INCLUIR QUE HACER
+                  
                   v_error := SQLERRM;
                   
-                    PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => p_term_code,
-                        p_pidm          => p_pidm,
-                        p_error_code    => 'ORACLE_ERR',
-                        p_error_message => v_error);
-                   END;
-                
-               ELSIF (v_rol NOT IN ('ON', 'AS') OR (v_rol IS NULL)) AND v_existe_inf_ad >=1 THEN
-               -- INACTIVAR usuario MER TMP
-               
-    dbms_output.put_line('registra_per.INACTIVA');
-    
-                 PKG_INT_BRIPACE_PERS.p_act_inact_pers(
-                                p_pidm   =>   p_pidm    ,
-                                p_term_code =>  p_term_code  ,
-                                p_estado_doc => 'IN' );
-                 
-                 
-                ELSIF v_rol IN ('ON', 'AS') AND v_existe_inf_ad >=1 THEN
-               -- ACTIVAR usuario MER TMP
-                BEGIN
-               
-               
-    dbms_output.put_line('registra_per. ACTIVA');
-    
-                  PKG_INT_BRIPACE_PERS.p_act_inact_pers(
-                                p_pidm   =>   p_pidm    ,
-                                p_term_code =>  p_term_code  ,
-                                p_estado_doc => 'AC' );
+                  RAISE_APPLICATION_ERROR(
+                     -20001,
+                     'ERROR: ' || v_error
+                  );
                 END;
-               
-               ELSE 
-                 
-    dbms_output.put_line(' ENTRA SEG IF');
-                
-                 v_error:= 'No se identifica linea de negocio o ID_ROL no permitido.'|| v_id;
-               
-                 PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => p_term_code,
-                        p_pidm          => p_pidm,
-                        p_error_code    => 'ERR_ID_ROL',
-                        p_error_message => v_error);
-               
-               END IF;
-         END IF; -- v_existe_doc
-    
-    dbms_output.put_line(' ENTRA FIN.'||LENGTH(v_rol));
+          END IF; -- v_existe_doc
+        --END IF; --v_per_online
+    END IF; --v_per_doc = p_term_code
   END p_registra_persona;
 
 -- -- Registra desde la tabla intermedia a la tabla de integracion 
@@ -221,9 +115,8 @@ create or replace PACKAGE BODY                                                  
         v_role_id_as GTVSDAX.GTVSDAX_COMMENTS%TYPE;
         v_existe_inf_ad number;
         
-        v_error             VARCHAR2(200);
-        v_error_message     VARCHAR2(1000);
-      
+        v_error           VARCHAR2(200);
+         v_error_message VARCHAR2(1000);
 
     BEGIN
 
@@ -304,9 +197,7 @@ create or replace PACKAGE BODY                                                  
                    b.SPRIDEN_LAST_NAME lname,
                    c.GOREMAL_EMAIL_ADDRESS email,
                    SPRIDEN_id,
-                   
-                   DECODE(SZRPEBP_ROL,'AS', TO_NUMBER(v_role_id_as), 'ON', TO_NUMBER(v_role_id_on) ) rol_doc,--TO_NUMBER(v_role_id_on) rol_doc,
-                   
+                   TO_NUMBER(v_role_id_on) rol_doc,
                    c.GOREMAL_EMAL_CODE emal_code,
                    c.GOREMAL_PREFERRED_IND pref_ind,
                    a.SZRPEBP_TERM_CODE term_code
@@ -396,7 +287,7 @@ create or replace PACKAGE BODY                                                  
                  WHERE ROWID = r.rid;
                  
                 IF SQL%ROWCOUNT = 1 THEN   
-                  v_error_message:= 'DOCENTE '||r.spriden_id||' creado correctamente';
+                  v_error_message:= 'DOCENTE creado correctamente';
              
                    PKG_INT_BRIPACE_TERM.p_registra_error_log(
                         p_business_line => 'ONLINE',
@@ -437,37 +328,21 @@ create or replace PACKAGE BODY                                                  
         END; 
   
         IF v_url IS NOT NULL   AND v_method IS NOT NULL THEN
-          v_seq:= null;
-        
-           dbms_output.put_line('mensaje URL: '||v_url||' '||v_method);
-           
             FOR i in (
              select a.ROWID rid,
-                    INTEGRACION.SEQ_ITZBGSP.NEXTVAL v_seq,
                     SZRPEBP_ID_MAESTRO id_maestro, 
                     b.GORADID_ADDITIONAL_ID id_usuario_brightspace,
-                    SZRPEBP_STATE,
-                    SZRPEBP_PIDM pidm,
-                    SPRIDEN_ID,
-                    SZRPEBP_TERM_CODE term_code,
-                    CASE 
-                      WHEN SZRPEBP_STATE = 'AC' THEN 'ACTIVE_USER'
-                      ELSE 'INACTIVE_USER' END action_user,
-                    CASE 
-                      WHEN SZRPEBP_STATE = 'AC' THEN 'activó'
-                      ELSE 'inactivó' END action_label_user
-                     from SZRPEBP a, GORADID b, SPRIDEN C
-                    where a.SZRPEBP_PIDM = b.GORADID_PIDM
-                      and a.SZRPEBP_PIDM = c.SPRIDEN_PIDM
-                      and b.GORADID_ADID_CODE = 'LMBO'
-                      and a.SZRPEBP_STATE IN ('AC', 'IN')
-                      and SPRIDEN_CHANGE_IND is null
+                    SZRPEBP_STATE
+                     from SZRPEBP a, GORADID b
+                    where SZRPEBP_PIDM = b.GORADID_PIDM
+                      and GORADID_ADID_CODE = 'LMBO'
+                      and SZRPEBP_STATE IN ('AC', 'IN')
             ) 
             LOOP
               BEGIN
                 SELECT JSON_ARRAY( JSON_OBJECT(
                  'request' VALUE JSON_OBJECT(
-                 'id' VALUE i.v_seq,
+                 'id' VALUE i.id_maestro,
                  'endpoint' VALUE REPLACE( v_url, '{ID_USUARIO_BRIGHTSPACE}',TO_CHAR(i.id_usuario_brightspace) ),
                  'method' VALUE v_method,
                  'body' VALUE JSON_OBJECT(
@@ -483,10 +358,6 @@ create or replace PACKAGE BODY                                                  
                 
                 -- Se inserta en la tabla de integracion
                 
-                
-           dbms_output.put_line('mensaje VA A INSERTAR itzbgsp. id_maestro'||i.id_maestro);
-           
-                BEGIN
                  INSERT INTO integracion.itzbgsp (
                     id,
                     business_line,
@@ -499,38 +370,16 @@ create or replace PACKAGE BODY                                                  
                     status
                 )
                 VALUES (
-                    i.v_seq,
+                    i.id_maestro,
                     'ONLINE',
                     l_json,
                     NULL,
                     SYSDATE,
                     SYSDATE,
                     NULL,
-                    i.action_user,
+                    'INACTIVE_USER',
                     'PENDING'
                 );
-                EXCEPTION WHEN OTHERS THEN
-                  v_error_message:=sqlerrm;
-                
-                  dbms_output.put_line('error: '||sqlerrm);
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => i.action_user,
-                        p_term_code     => i.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn            => NULL,
-                        p_pidm          => i.pidm,
-                        p_state         => 'ERROR',
-                        p_error_code    => SQLCODE,
-                        p_error_message => v_error_message
-                    );
-
-                    ------------------------------------------------------------------
-                    -- NO CONTINUAR CON ESTE DOCENTE
-                    ------------------------------------------------------------------
-                    CONTINUE;
-                  
-                END;
                 ------------------------------------------------------------------
                 -- Actualizar estado en SZRTMBP
                 ------------------------------------------------------------------
@@ -538,36 +387,8 @@ create or replace PACKAGE BODY                                                  
                    SET SZRPEBP_STATE = 'SEND',
                        SZRPEBP_ID_MAESTRO= i.id_maestro
                  WHERE ROWID = i.rid;
-                 
-                 v_error_message:= 'El docente '||i.SPRIDEN_ID||' se '||i.action_label_user|| ' correctamente';
-             
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => i.action_user,
-                        p_term_code     => i.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn           => NULL,
-                        p_pidm          => i.pidm,
-                        p_state           => 'OK',
-                        p_error_code    => 'OK',
-                        p_error_message => v_error_message);
-
-               EXCEPTION WHEN OTHERS THEN
-                  v_error_message:=sqlerrm;
                 
-                  dbms_output.put_line('error 2: '||sqlerrm);
-                  
-                  PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => i.action_user,
-                        p_term_code     => i.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn           => NULL,
-                        p_pidm          => i.pidm,
-                        p_state           => 'OK',
-                        p_error_code    => 'OK',
-                        p_error_message => v_error_message);
-              
+
               END;
            
             END LOOP;
@@ -577,7 +398,7 @@ create or replace PACKAGE BODY                                                  
     
 -- ACTIVA INACTIVA EL DOCENTE desde el trigger de SIBINST
 --
-      PROCEDURE p_act_inact_pers(
+            PROCEDURE p_act_inact_pers(
         p_pidm         NUMBER,
         p_term_code    VARCHAR2,
         p_estado_doc   VARCHAR2
@@ -591,24 +412,36 @@ create or replace PACKAGE BODY                                                  
     v_per_doc    VARCHAR2(6);
     v_per_online VARCHAR2(6);
     v_id_maestro NUMBER;
- 
+    v_id_bripace VARCHAR2(20);
 
     BEGIN
-     -- validamos si el docente ya existe en la tabla intermedia y si tiene dato adicional LMBO
-     DBMS_OUTPUT.PUT_LINE('ENTRA A p_act_inact_pers. PERIODO: '||p_term_code );
-        Begin
-          select SZRPEBP_ID_MAESTRO
-            into v_id_maestro
-            from SZRPEBP a
-           where SZRPEBP_PIDM = p_pidm;
-         Exception WHEN OTHERS THEN
-           v_id_maestro:= NULL;
-           DBMS_OUTPUT.PUT_LINE('ENTRA A p_act_inact_pers. Exception' );
-        End;
-        
-          DBMS_OUTPUT.PUT_LINE('ENTRA A v_id_maestro. '||v_id_maestro );
+    -- Valida que el periodo registrado sea el de la variable GTVSDAX
+    -- indica el periodo donde los docentes(SIAINST) tienen los datos suplementarios SMART_ONLINE, SMART_FLEX_SMART_CYP
+     v_per_doc:= pkg_int_bripace_term.f_get_gtvsdax(
+                'ONLINE',
+                'PER_DOC',
+                'DEV_INT_BRIGTHSPACE'
+            );
+    
+	   IF v_per_doc = p_term_code THEN -- si el periodo de gtvsdax es el periodo del docente de sianst entonces se va en la integracion 
+      
+               -- validamos si el docente ya existe en la tabla intermedia y si tiene dato adicional LMBO
+                Begin
+                    select SZRPEBP_ID_MAESTRO, TO_NUMBER(b.GORADID_ADDITIONAL_ID) 
+                      into v_id_maestro, v_id_bripace
+                     from SZRPEBP a, GORADID b
+                    where SZRPEBP_PIDM = b.GORADID_PIDM
+                      and GORADID_ADID_CODE = 'LMBO'
+                      and SZRPEBP_PIDM = p_pidm;
+                Exception WHEN OTHERS THEN
+                  v_id_maestro:= NULL;
+                  v_id_bripace:= NULL;
+                End;
+                           
+               -- SI  existe y tiene DATO ADICIONAL  debe modificar en tabla intermedia para que despues se procece en la integracion
                -- lo reprocece con el p_estado_doc=  AC para activar e IN para INACTIVAR
-              IF v_id_maestro IS NOT NULL  THEN 
+               IF v_id_maestro IS NOT NULL AND v_id_bripace IS NOT NULL THEN 
+               
                    BEGIN
                      UPDATE SZRPEBP
                        SET SZRPEBP_STATE = p_estado_doc,
@@ -616,16 +449,21 @@ create or replace PACKAGE BODY                                                  
                        SZRPEBP_ACTIVITY_DATE = SYSDATE,
                        SZRPEBP_OPERACION = 'U'
                      WHERE SZRPEBP_PIDM = p_pidm
-                       AND SZRPEBP_TERM_CODE = p_term_code;
-                  --     AND SZRPEBP_LINE_NEG = v_per_online;
+                       AND SZRPEBP_TERM_CODE = p_term_code
+                       AND SZRPEBP_LINE_NEG = v_per_online;
                      
                 EXCEPTION WHEN OTHERS THEN
                 --  NULL; -- MER TMP INCLUIR QUE HACER
-                  v_error := SQLERRM;
-                     DBMS_OUTPUT.PUT_LINE('ENTRA A ERROR p_act_inact_pers. '||v_error );
                   
+                  v_error := SQLERRM;
+                  
+                  RAISE_APPLICATION_ERROR(
+                     -20001,
+                     'ERROR: ' || v_error
+                  );
                 END;
-              END IF; -- v_existe_doc
+          END IF; -- v_existe_doc
+    END IF; --v_per_doc = p_term_code
   END p_act_inact_pers;
 
 --
