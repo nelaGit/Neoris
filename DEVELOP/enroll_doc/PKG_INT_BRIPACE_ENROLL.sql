@@ -184,6 +184,7 @@ create or replace PACKAGE BODY                                                  
         v_tipo_enroll      VARCHAR2(30);
 
         v_error           VARCHAR2(200);
+        v_error_message   VARCHAR2(300);
 
     BEGIN
         ------------------------------------------------------------------
@@ -326,6 +327,30 @@ create or replace PACKAGE BODY                                                  
                    SET SZREDBP_state = 'SEND',
                        SZREDBP_ID_MAESTRO= v_seq
                  WHERE ROWID = r.rid;
+                 
+                 -- ini mer 6 sep 2026
+                 v_error_message :=
+                    'El docente ' ||
+                    GB_COMMON.F_GET_ID(r.SZREDBP_PIDM)  ||
+                    ' se ejecutó  ' ||
+                    v_tipo_enroll ||
+                    ' correctamente';
+
+                PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                    p_business_line => 'ONLINE',
+                    p_op_type       => v_tipo_enroll,
+                    p_term_code     => r.SZREDBP_TERM_CODE,
+                    p_ptrm_code     => NULL,
+                    p_crn            => r.SZREDBP_CRN,
+                    p_pidm          => r.SZREDBP_PIDM,
+                    p_state         => v_tipo_enroll||' OK',
+                    p_error_code    => 'OK',
+                    p_error_message => v_error_message
+                );
+                 
+                 
+                 -- fin
+                 
           ELSE -- Operacion DEL
             DELETE SZREDBP
              WHERE ROWID = r.rid;
