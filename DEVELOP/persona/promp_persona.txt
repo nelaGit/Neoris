@@ -1,0 +1,43 @@
+* CREA una tabla llamada PRGNREP.SZASIRI de auditoría para SIRICNT con los campos
+SZASIRI_PIDM
+SZASIRI_TERM_CODE_EFF
+SZASIRI_FCNT_CODE
+SZASIRI_CNTR_CODE
+SZASIRI_DEF_IND
+SZASIRI_ACTIVITY_DATE
+SZASIRI_SURROGATE_ID
+SZASIRI_VERSION
+SZASIRI_USER_ID
+SZASIRI_DATA_ORIGIN
+SZASIRI_VPDI_CODE
+* creale sinónimo publico 
+* creale permisos publicos de select, insert, update, delete
+
+la tabla debe tener su propia secuencia (es para el campo SZASIRI_SURROGATE_ID) llenada automáticamente a través de un trigger que también debes crear.
+
+* CREA un procedure de auditoria llamado p_audit_siricnt para SIRICNT. Este estará dentro de un paquete que ya tengo: Este procedure debe hacer la inserción a la tabla SZASIRI
+
+TRIGGER integracion.TRG_SZRTMBP_BI
+
+* Crea un COMPOUND TRIGGER llamado ST_SIBINST_BRIGSPACE. Aplica para la tabla:SIRICNT
+SIRICNT_PIDM
+SIRICNT_TERM_CODE_EFF
+SIRICNT_FCNT_CODE
+SIRICNT_CNTR_CODE
+
+y se lleve la OPERACION (INSERT, UPDATE O DELETE) 
+   llame el proc : PKG_INT_BRIPACE_PERS.p_registra_persona(
+             g_registros(i).pidm,
+             g_registros(i).TERM_CODE_EFF,
+             g_registros(i).FCNT_CODE,
+             g_registros(i).CNTR_CODE,
+             g_registros(i).operacion
+
+         );
+
+* Este proc PKG_INT_BRIPACE_PERS.p_registra_persona se debe modificar, asi:
+  - si es DELETE: Inactiva la persona
+  - si es INSERT y tiene datos adicionales: CREA LA PERSONA
+  - si es UPDATE: cambio de ROL y AUDITORIA
+
+

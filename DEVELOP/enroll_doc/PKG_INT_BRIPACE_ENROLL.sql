@@ -1,4 +1,24 @@
-create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
+create or replace PACKAGE                                  PKG_INT_BRIPACE_ENROLL AS
+
+-- Registra en tabla intermedia SZREDBP datos del periodo capturados desde el trigger de SOBPTRM
+    PROCEDURE p_registra_enroll_doc(
+         p_action            VARCHAR2,
+		p_term_code  VARCHAR2,
+        p_crn         VARCHAR2,
+        p_pidm         NUMBER,
+        p_cat              VARCHAR2,
+        p_line        VARCHAR2,
+        p_prim_ind    VARCHAR2 -- ind que define el rol
+    );
+
+-- Registra desde la tabla intermedia a la tabla de integracion
+PROCEDURE p_registra_enroll_doc_int ;
+
+
+END PKG_INT_BRIPACE_ENROLL;
+/
+
+create or replace PACKAGE BODY                                                        PKG_INT_BRIPACE_ENROLL AS
     
 
     PROCEDURE p_registra_enroll_doc(
@@ -59,6 +79,8 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
       EXCEPTION When NO_DATA_FOUND Then
         v_id_nrc := NULL;
       END;
+  
+      dbms_output.put_line('mensaje: v_role_id: '||v_role_id||' v_addic_id: '||v_addic_id||'- v_id_nrc: '||v_id_nrc||'-p_prim_ind:'||p_prim_ind||'-p_action: '||p_action);
   
       IF v_role_id IS NOT NULL and v_addic_id IS NOT NULL AND v_id_nrc IS NOT NULL THEN
 
@@ -158,8 +180,11 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
         v_org_type         GTVSDAX.GTVSDAX_COMMENTS%TYPE;
         v_org_parent       GTVSDAX.GTVSDAX_COMMENTS%TYPE;
         v_seq              number;
+        
+        v_tipo_enroll      VARCHAR2(30);
 
         v_error           VARCHAR2(200);
+        v_error_message   VARCHAR2(300);
 
     BEGIN
         ------------------------------------------------------------------
@@ -185,6 +210,8 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
          v_method:= SUBSTR(v_path_base,1, INSTR(v_path_base, ',') -1);
 
          v_path:= SUBSTR(v_path_base, INSTR(v_path_base, ',') + 1);
+         
+         
 
         ------------------------------------------------------------------
         -- Procesar todos los registros NEW
@@ -198,9 +225,9 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
 				   SZREDBP_LINE_NEG,
                    SZREDBP_STATE,
                    SZREDBP_ID_MAESTRO,
-                   SZREDBP_ROLE_ID,
-                   SZREDBP_ADDIC_ID,
-                   SZREDBP_NRC_ID
+                   TO_NUMBER(SZREDBP_ROLE_ID) SZREDBP_ROLE_ID,
+                   TO_NUMBER(SZREDBP_ADDIC_ID) SZREDBP_ADDIC_ID,
+                   TO_NUMBER(SZREDBP_NRC_ID) SZREDBP_NRC_ID
               FROM SZREDBP A
              WHERE SZREDBP_state IN ('NEW', 'DEL') -- Nuevos y borrados
         )
@@ -214,6 +241,7 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
          -- La secuencia es para el state NEW porque el DEL ya tiene seq
         IF r.SZREDBP_STATE = 'NEW' THEN
            v_seq := INTEGRACION.SEQ_ITZBGSP.NEXTVAL;
+           v_tipo_enroll:= 'ENROLLMENT_TEACHER';
            
            SELECT JSON_ARRAYAGG(
                    JSON_OBJECT(
@@ -222,9 +250,9 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
                            'endpoint' VALUE v_url || v_path,
                            'method' VALUE v_method,
                            'body' VALUE JSON_OBJECT(
-                               'OrgUnitId' VALUE TO_NUMBER(r.SZREDBP_NRC_ID), --id_nrc
-                               'UserId' VALUE TO_NUMBER(r.SZREDBP_ADDIC_ID), --id user
-                               'RoleId' VALUE TO_NUMBER(r.SZREDBP_ROLE_ID), --id rol
+                               'OrgUnitId' VALUE r.SZREDBP_NRC_ID, --id_nrc
+                               'UserId' VALUE r.SZREDBP_ADDIC_ID, --id user
+                               'RoleId' VALUE r.SZREDBP_ROLE_ID, --id rol
                                'SendEnrollmentEmail' VALUE 'false' FORMAT JSON
                            RETURNING CLOB)
                        RETURNING CLOB),
@@ -237,8 +265,13 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
         FROM dual;
            
         ELSE
-            v_seq := r.SZREDBP_ID_MAESTRO;
+          --  v_seq := r.SZREDBP_ID_MAESTRO;
+            v_seq := INTEGRACION.SEQ_ITZBGSP.NEXTVAL;
             v_method:= 'DELETE';
+            
+            v_tipo_enroll:= 'DELETE_ENROLLMENT_TEACHER'; 
+            
+            v_path:= v_path || 'users/' || r.SZREDBP_ADDIC_ID || '/orgUnits/' || r.SZREDBP_NRC_ID;
             
              SELECT JSON_ARRAYAGG(
                    JSON_OBJECT(
@@ -282,17 +315,46 @@ create or replace PACKAGE BODY                    PKG_INT_BRIPACE_ENROLL AS
                     SYSDATE,
                     SYSDATE,
                     NULL,
-                    'ENROLLMENT_TEACHER',
+                    v_tipo_enroll,
                     'PENDING'
                 );
     dbms_output.put_line('mensaje 4');
                 ------------------------------------------------------------------
-                -- Actualizar estado en SZREDBP
+                -- Actualizar estado en SZREDBP o borra si la operacion es DELETE
                 ------------------------------------------------------------------
+           IF r.SZREDBP_STATE = 'NEW' THEN
                 UPDATE SZREDBP
                    SET SZREDBP_state = 'SEND',
                        SZREDBP_ID_MAESTRO= v_seq
                  WHERE ROWID = r.rid;
+                 
+                 -- ini mer 6 sep 2026
+                 v_error_message :=
+                    'El docente ' ||
+                    GB_COMMON.F_GET_ID(r.SZREDBP_PIDM)  ||
+                    ' se ejecutó  ' ||
+                    v_tipo_enroll ||
+                    ' correctamente';
+
+                PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                    p_business_line => 'ONLINE',
+                    p_op_type       => v_tipo_enroll,
+                    p_term_code     => r.SZREDBP_TERM_CODE,
+                    p_ptrm_code     => NULL,
+                    p_crn            => r.SZREDBP_CRN,
+                    p_pidm          => r.SZREDBP_PIDM,
+                    p_state         => v_tipo_enroll||' OK',
+                    p_error_code    => 'OK',
+                    p_error_message => v_error_message
+                );
+                 
+                 
+                 -- fin
+                 
+          ELSE -- Operacion DEL
+            DELETE SZREDBP
+             WHERE ROWID = r.rid;
+          END IF;
 
             EXCEPTION
                 WHEN OTHERS THEN
