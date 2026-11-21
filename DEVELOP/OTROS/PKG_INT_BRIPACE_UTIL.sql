@@ -1,4 +1,4 @@
-create or replace PACKAGE                         PKG_INT_BRIPACE_UTIL AS
+create or replace PACKAGE                                  PKG_INT_BRIPACE_UTIL AS
 
     ----------------------------------------------------------------------
     -- LOG DE INTEGRACIÓN
@@ -18,6 +18,23 @@ create or replace PACKAGE                         PKG_INT_BRIPACE_UTIL AS
         p_data_origin      IN SZRLGBP.SZRLGBP_DATA_ORIGIN%TYPE DEFAULT NULL
     );
 
+   ----------------------------------------------------------------------
+    -- LOG DE INTEGRACIÓN unico para que no repita el mismo error. Log controlado
+    ----------------------------------------------------------------------
+  PROCEDURE p_registra_error_log_uk (
+        p_business_line    IN SZRLGBP.SZRLGBP_BUSINESS_LINE%TYPE,
+        p_op_type          IN SZRLGBP.SZRLGBP_OP_TYPE%TYPE,
+        p_term_code        IN SZRLGBP.SZRLGBP_TERM_CODE%TYPE,
+        p_ptrm_code       IN SZRLGBP.SZRLGBP_PTRM_CODE%TYPE DEFAULT NULL,
+        p_crn              IN SZRLGBP.SZRLGBP_CRN%TYPE DEFAULT NULL,
+        p_pidm             IN SZRLGBP.SZRLGBP_PIDM%TYPE DEFAULT NULL,
+        p_error_code       IN  SZRLGBP.SZRLGBP_ERROR_CODE%TYPE,
+        p_error_message    IN  SZRLGBP.SZRLGBP_ERROR_MESSAGE%TYPE,
+        p_id_maestro       IN SZRLGBP.SZRLGBP_ID_MAESTRO%TYPE DEFAULT NULL,
+        p_state            IN SZRLGBP.SZRLGBP_STATE%TYPE DEFAULT 'ERROR',
+        p_user_id          IN SZRLGBP.SZRLGBP_USER_ID%TYPE DEFAULT USER,
+        p_data_origin      IN SZRLGBP.SZRLGBP_DATA_ORIGIN%TYPE DEFAULT NULL
+    );
 
     ----------------------------------------------------------------------
     -- TABLA INTERMEDIA: SZRTMBP - PERIODOS
@@ -65,7 +82,9 @@ create or replace PACKAGE                         PKG_INT_BRIPACE_UTIL AS
     p_endpoint      IN VARCHAR2,
     p_method        IN VARCHAR2,
     p_body          IN CLOB,
-    p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE
+    p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE,
+    p_pidm            IN NUMBER DEFAULT NULL,
+    p_id_spriden      IN NUMBER DEFAULT NULL
 );
     
 TYPE t_itzbgsp_rec IS RECORD (
@@ -84,11 +103,44 @@ TYPE t_itzbgsp_rec IS RECORD (
       p_business_line   IN INTEGRACION.ITZBGSP.BUSINESS_LINE%TYPE,
       p_op_type         IN INTEGRACION.ITZBGSP.OP_TYPE%TYPE,
       p_registros       IN t_itzbgsp_tab,
-      p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE
+      p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE,
+      p_pidm            IN NUMBER DEFAULT NULL,
+      p_id_spriden      IN NUMBER DEFAULT NULL
    );
+   
+   PROCEDURE P_PROCESA_RESPONSE;
+   
+   PROCEDURE P_PROCESA_RESPONSE_ALU;
+   
+   PROCEDURE P_ACTUALIZA_ESTADO_ITZBGSP (
+    P_ID_MAESTRO      IN INTEGRACION.ITZBGSP.ID%TYPE,
+    P_OP_TYPE         IN INTEGRACION.ITZBGSP.OP_TYPE%TYPE,
+    P_STATUS_RESPONSE IN INTEGRACION.ITZBGSP.STATUS_RESPONSE%TYPE
+);
+
+PROCEDURE P_ACTUALIZA_ESTADO_ITZERST (
+    P_ID              IN INTEGRACION.ITZERST.ID%TYPE,
+    P_OP_TYPE         IN INTEGRACION.ITZERST.OP_TYPE%TYPE,
+    P_STATUS_RESPONSE IN INTEGRACION.ITZERST.STATUS_RESPONSE%TYPE
+);
+
+PROCEDURE P_ACTUALIZA_INTERMEDIA_STATE (
+    P_TIPO        IN VARCHAR2,
+    P_ID_MAESTRO  IN NUMBER,
+    P_STATE_OLD   IN VARCHAR2,
+    P_STATE       IN VARCHAR2,
+    P_MENSAJE     IN VARCHAR2 DEFAULT NULL
+);
+
+PROCEDURE p_obtener_config_api (
+        p_operacion IN  VARCHAR2,
+        p_url       OUT VARCHAR2,
+        p_method    OUT VARCHAR2,
+        p_path      OUT VARCHAR2
+    );
 
 END PKG_INT_BRIPACE_UTIL;
-/
+
 create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
 
 
@@ -163,7 +215,149 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
 
     END p_registra_error_log;
 
+  PROCEDURE p_registra_error_log_uk (
+        p_business_line    IN SZRLGBP.SZRLGBP_BUSINESS_LINE%TYPE,
+        p_op_type          IN SZRLGBP.SZRLGBP_OP_TYPE%TYPE,
+        p_term_code        IN SZRLGBP.SZRLGBP_TERM_CODE%TYPE,
+        p_ptrm_code        IN SZRLGBP.SZRLGBP_PTRM_CODE%TYPE DEFAULT NULL,
+        p_crn              IN SZRLGBP.SZRLGBP_CRN%TYPE DEFAULT NULL,
+        p_pidm             IN SZRLGBP.SZRLGBP_PIDM%TYPE DEFAULT NULL,
+        p_error_code       IN SZRLGBP.SZRLGBP_ERROR_CODE%TYPE,
+        p_error_message    IN SZRLGBP.SZRLGBP_ERROR_MESSAGE%TYPE,
+        p_id_maestro       IN SZRLGBP.SZRLGBP_ID_MAESTRO%TYPE DEFAULT NULL,
+        p_state            IN SZRLGBP.SZRLGBP_STATE%TYPE DEFAULT 'ERROR',
+        p_user_id          IN SZRLGBP.SZRLGBP_USER_ID%TYPE DEFAULT USER,
+        p_data_origin      IN SZRLGBP.SZRLGBP_DATA_ORIGIN%TYPE DEFAULT NULL
+    )
+    IS
+        PRAGMA AUTONOMOUS_TRANSACTION;
 
+        v_existe       NUMBER;
+        v_error_mess   VARCHAR2(4000);
+
+    BEGIN
+
+        ------------------------------------------------------------------
+        -- Comprobar si el mismo error ya está registrado
+        ------------------------------------------------------------------
+        SELECT COUNT(1)
+          INTO v_existe
+          FROM SZRLGBP
+         WHERE SZRLGBP_BUSINESS_LINE = p_business_line
+           AND SZRLGBP_OP_TYPE       = p_op_type
+           AND NVL(SZRLGBP_TERM_CODE, '0') = NVL(p_term_code, '0')
+           AND NVL(SZRLGBP_PTRM_CODE, '0') = NVL(p_ptrm_code, '0')
+           AND NVL(SZRLGBP_CRN, '0')       = NVL(p_crn, '0')
+           AND NVL(SZRLGBP_PIDM, 0)        = NVL(p_pidm, 0)
+           AND SZRLGBP_ERROR_CODE          = p_error_code
+           AND SZRLGBP_STATE               = p_state;
+
+        ------------------------------------------------------------------
+        -- Registrar solamente si no existe
+        ------------------------------------------------------------------
+        IF v_existe = 0 THEN
+
+            INSERT INTO SZRLGBP
+            (
+                SZRLGBP_ID,
+                SZRLGBP_BUSINESS_LINE,
+                SZRLGBP_OP_TYPE,
+                SZRLGBP_TERM_CODE,
+                SZRLGBP_PTRM_CODE,
+                SZRLGBP_CRN,
+                SZRLGBP_PIDM,
+                SZRLGBP_ERROR_CODE,
+                SZRLGBP_ERROR_MESSAGE,
+                SZRLGBP_ID_MAESTRO,
+                SZRLGBP_STATE,
+                SZRLGBP_USER_ID,
+                SZRLGBP_ACTIVITY_DATE,
+                SZRLGBP_DATA_ORIGIN
+            )
+            VALUES
+            (
+                SEQ_SZRLGBP.NEXTVAL,
+                p_business_line,
+                p_op_type,
+                p_term_code,
+                p_ptrm_code,
+                p_crn,
+                p_pidm,
+                p_error_code,
+                p_error_message,
+                p_id_maestro,
+                p_state,
+                p_user_id,
+                SYSDATE,
+                p_data_origin
+            );
+
+        END IF;
+
+        ------------------------------------------------------------------
+        -- IMPORTANTE:
+        -- La transacción autónoma debe finalizar con COMMIT
+        ------------------------------------------------------------------
+        COMMIT;
+
+
+    EXCEPTION
+        WHEN OTHERS THEN
+
+            ------------------------------------------------------------------
+            -- Guardamos el error que provocó el fallo del procedimiento
+            ------------------------------------------------------------------
+            v_error_mess := SQLERRM;
+
+            BEGIN
+
+                INSERT INTO SZRLGBP
+                (
+                    SZRLGBP_ID,
+                    SZRLGBP_BUSINESS_LINE,
+                    SZRLGBP_OP_TYPE,
+                    SZRLGBP_TERM_CODE,
+                    SZRLGBP_PTRM_CODE,
+                    SZRLGBP_CRN,
+                    SZRLGBP_PIDM,
+                    SZRLGBP_ERROR_CODE,
+                    SZRLGBP_ERROR_MESSAGE,
+                    SZRLGBP_ID_MAESTRO,
+                    SZRLGBP_STATE,
+                    SZRLGBP_USER_ID,
+                    SZRLGBP_ACTIVITY_DATE,
+                    SZRLGBP_DATA_ORIGIN
+                )
+                VALUES
+                (
+                    SEQ_SZRLGBP.NEXTVAL,
+                    p_business_line,
+                    p_op_type,
+                    p_term_code,
+                    p_ptrm_code,
+                    p_crn,
+                    p_pidm,
+                    'ERROR_ORACLE',
+                    v_error_mess,
+                    p_id_maestro,
+                    'ERROR',
+                    p_user_id,
+                    SYSDATE,
+                    p_data_origin
+                );
+
+                COMMIT;
+
+            EXCEPTION
+                WHEN OTHERS THEN
+                    ------------------------------------------------------------------
+                    -- Si incluso el registro del error falla,
+                    -- deshacemos la transacción autónoma.
+                    ------------------------------------------------------------------
+                    ROLLBACK;
+            END;
+
+    END p_registra_error_log_uk;
     ----------------------------------------------------------------------
     -- TABLA INTERMEDIA: SZRTMBP
     -- PERIODOS
@@ -239,17 +433,17 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
         ------------------------------------------------------------------
         -- LOG ÉXITO
         ------------------------------------------------------------------
-
-        p_registra_error_log(
-            p_business_line => p_business_line,
-            p_op_type       => p_op_type,
-            p_term_code     => p_registro.SZRTMBP_TERM_CODE,
-            p_ptrm_code     => p_registro.SZRTMBP_PTRM_CODE,
-            p_error_code    => 'INTERMEDIA_OK',
-            p_error_message => 'Registro de periodo procesado correctamente',
-            p_state         => 'OK',
-            p_data_origin   => p_registro.SZRTMBP_DATA_ORIGIN
-        );
+--
+--        p_registra_error_log(
+--            p_business_line => p_business_line,
+--            p_op_type       => p_op_type,
+--            p_term_code     => p_registro.SZRTMBP_TERM_CODE,
+--            p_ptrm_code     => p_registro.SZRTMBP_PTRM_CODE,
+--            p_error_code    => 'INTERMEDIA_OK',
+--            p_error_message => 'Registro de periodo procesado correctamente',
+--            p_state         => 'OK',
+--            p_data_origin   => p_registro.SZRTMBP_DATA_ORIGIN
+--        );
 
 
     EXCEPTION
@@ -332,20 +526,20 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
         );
 
 
-        ------------------------------------------------------------------
-        -- LOG ÉXITO
-        ------------------------------------------------------------------
-
-        p_registra_error_log(
-            p_business_line => p_business_line,
-            p_op_type       => p_op_type,
-            p_term_code     => p_registro.SZRSSBP_TERM_CODE,
-            p_crn           => p_registro.SZRSSBP_CRN,
-            p_error_code    => 'INTERMEDIA_OK',
-            p_error_message => 'Registro de NRC procesado correctamente',
-            p_state         => 'OK',
-            p_data_origin   => p_registro.SZRSSBP_DATA_ORIGIN
-        );
+--        ------------------------------------------------------------------
+--        -- LOG ÉXITO
+--        ------------------------------------------------------------------
+--
+--        p_registra_error_log(
+--            p_business_line => p_business_line,
+--            p_op_type       => p_op_type,
+--            p_term_code     => p_registro.SZRSSBP_TERM_CODE,
+--            p_crn           => p_registro.SZRSSBP_CRN,
+--            p_error_code    => 'INTERMEDIA_OK',
+--            p_error_message => 'Registro de NRC procesado correctamente',
+--            p_state         => 'OK',
+--            p_data_origin   => p_registro.SZRSSBP_DATA_ORIGIN
+--        );
 
 
     EXCEPTION
@@ -428,17 +622,17 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
         ------------------------------------------------------------------
         -- LOG ÉXITO
         ------------------------------------------------------------------
-
-        p_registra_error_log(
-            p_business_line => p_business_line,
-            p_op_type       => p_op_type,
-            p_term_code     => p_registro.SZRPEBP_TERM_CODE,
-            p_pidm          => p_registro.SZRPEBP_PIDM,
-            p_error_code    => 'INTERMEDIA_OK',
-            p_error_message => 'Registro de persona procesado correctamente',
-            p_state         => 'OK',
-            p_data_origin   => p_registro.SZRPEBP_DATA_ORIGIN
-        );
+--
+--        p_registra_error_log(
+--            p_business_line => p_business_line,
+--            p_op_type       => p_op_type,
+--            p_term_code     => p_registro.SZRPEBP_TERM_CODE,
+--            p_pidm          => p_registro.SZRPEBP_PIDM,
+--            p_error_code    => 'INTERMEDIA_OK',
+--            p_error_message => 'Registro de persona procesado correctamente',
+--            p_state         => 'OK',
+--            p_data_origin   => p_registro.SZRPEBP_DATA_ORIGIN
+--        );
 
 
     EXCEPTION
@@ -557,18 +751,18 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
         ------------------------------------------------------------------
         -- LOG ÉXITO
         ------------------------------------------------------------------
-
-        p_registra_error_log(
-            p_business_line => p_business_line,
-            p_op_type       => p_op_type,
-            p_term_code     => p_registro.SZREDBP_TERM_CODE,
-            p_crn           => p_registro.SZREDBP_CRN,
-            p_pidm          => p_registro.SZREDBP_PIDM,
-            p_error_code    => 'INTERMEDIA_OK',
-            p_error_message => 'Registro de enrollment procesado correctamente',
-            p_state         => 'OK',
-            p_data_origin   => p_registro.SZREDBP_DATA_ORIGIN
-        );
+--
+--        p_registra_error_log(
+--            p_business_line => p_business_line,
+--            p_op_type       => p_op_type,
+--            p_term_code     => p_registro.SZREDBP_TERM_CODE,
+--            p_crn           => p_registro.SZREDBP_CRN,
+--            p_pidm          => p_registro.SZREDBP_PIDM,
+--            p_error_code    => 'INTERMEDIA_OK',
+--            p_error_message => 'Registro de enrollment procesado correctamente',
+--            p_state         => 'OK',
+--            p_data_origin   => p_registro.SZREDBP_DATA_ORIGIN
+--        );
 
 
     EXCEPTION
@@ -598,7 +792,9 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
     p_business_line   IN INTEGRACION.ITZBGSP.BUSINESS_LINE%TYPE,
     p_op_type         IN INTEGRACION.ITZBGSP.OP_TYPE%TYPE,
     p_registros       IN t_itzbgsp_tab,
-    p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE
+    p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE,
+    p_pidm            IN NUMBER DEFAULT NULL,
+    p_id_spriden      IN NUMBER DEFAULT NULL
     )
     IS
         l_request CLOB;
@@ -649,7 +845,9 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
             REQUEST_DATE,
             RESPONSE_DATE,
             OP_TYPE,
-            STATUS
+            STATUS,
+            PIDM,
+            ID_SPRIDEN
         )
         VALUES (
             p_id_generado,
@@ -660,7 +858,9 @@ create or replace PACKAGE BODY                         PKG_INT_BRIPACE_UTIL AS
             NULL,
             NULL,
             p_op_type,
-            'PENDING'
+            'PENDING',
+            p_pidm,
+            p_id_spriden
         );
 
 END p_genera_inserta_itzbgsp_multi;
@@ -676,7 +876,9 @@ END p_genera_inserta_itzbgsp_multi;
     p_endpoint      IN VARCHAR2,
     p_method        IN VARCHAR2,
     p_body          IN CLOB,
-    p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE
+    p_id_generado   OUT INTEGRACION.ITZBGSP.ID%TYPE,
+    p_pidm            IN NUMBER DEFAULT NULL,
+    p_id_spriden      IN NUMBER DEFAULT NULL
 )
 IS
     l_json CLOB;
@@ -721,7 +923,9 @@ BEGIN
         REQUEST_DATE,
         RESPONSE_DATE,
         OP_TYPE,
-        STATUS
+        STATUS,
+        PIDM,
+        ID_SPRIDEN
     )
     VALUES (
         p_id_generado,
@@ -732,12 +936,368 @@ BEGIN
         SYSDATE,
         NULL,
         p_op_type,
-        'PENDING'
+        'PENDING',
+        p_pidm,
+        p_id_spriden
     );
 
 END p_genera_inserta_itzbgsp;
 
+PROCEDURE P_PROCESA_RESPONSE
+IS
+  v_error VARCHAR2(200);
+BEGIN
+
+    FOR R IN (
+        SELECT ROWID AS RID,
+               ID,
+               OP_TYPE,
+               STATUS
+          FROM INTEGRACION.ITZBGSP
+         WHERE STATUS_RESPONSE IS NULL
+           AND STATUS IN ('PROCESSED_OK', 'PROCESSED_KO')
+         ORDER BY ID
+    )
+    LOOP
+
+        BEGIN
+            ------------------------------------------------------------
+            -- 1. Marcar el registro como PROCESSING_RESPONSE
+            ------------------------------------------------------------
+            UPDATE INTEGRACION.ITZBGSP
+               SET STATUS_RESPONSE = 'PROCESSING_RESPONSE'
+             WHERE ROWID = R.RID
+               AND STATUS_RESPONSE IS NULL;
+
+            COMMIT;
+
+            ------------------------------------------------------------
+            -- 2. Procesar según STATUS
+            ------------------------------------------------------------
+
+            IF R.STATUS = 'PROCESSED_KO' THEN
+
+                --------------------------------------------------------
+                -- PROCESSED_KO
+                -- REGISTROS CON ERROR
+                --------------------------------------------------------
+                v_error:= 'Falló la operación de '||R.OP_TYPE;
+                
+                  PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
+                            p_business_line => 'ONLINE',
+                            p_op_type       => R.OP_TYPE,
+                            p_term_code     => null,
+                            p_ptrm_code     => null,
+                            p_error_code    => R.OP_TYPE||'_ERR',
+                            p_error_message => v_error
+                        );
+
+            ELSIF R.STATUS = 'PROCESSED_OK' THEN
+
+                --------------------------------------------------------
+                -- PROCESSED_OK
+                -- Ejecutar procedimiento según OP_TYPE
+                --------------------------------------------------------
+
+                CASE R.OP_TYPE
+
+                    WHEN 'CREATE_TERM' THEN
+
+                        INTEGRACION.PKG_INT_BRIPACE_TERM.p_insert_itzsupl(
+                            p_id_maestro => R.ID
+                        );
+
+
+                    WHEN 'CREATE_NRC' THEN
+
+                        INTEGRACION.PKG_INT_BRIPACE_NRC.p_insert_itzsupl(
+                            p_id_maestro => R.ID
+                        );
+
+
+                    WHEN 'CREATE_USER_TH' THEN
+                    -- DOCENTES             
+
+                        INTEGRACION.PKG_INT_BRIPACE_PERS.p_insert_goradid(
+                            p_id_maestro => R.ID
+                        );
+                     WHEN 'CREATE_USER_ST' THEN
+                        -- ALUMNOS
+                        INTEGRACION.PKG_INT_BRIPACE_PERS.p_insert_goradid_alu(
+                            p_id_maestro => R.ID
+                        );
+
+                    ELSE
+                       --los demas procesos en 'PROCESSED_OK' los pasa a COMPLETED_OK
+                       PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_ESTADO_ITZBGSP( r.id, R.OP_TYPE, 'COMPLETED_OK');
+
+                END CASE;
+
+            END IF;
+
+
+        EXCEPTION
+            WHEN OTHERS THEN
+
+                --------------------------------------------------------
+                -- Si ocurre un error, dejar nuevamente el registro
+                -- disponible para un próximo procesamiento
+                --------------------------------------------------------
+                UPDATE INTEGRACION.ITZBGSP
+                   SET STATUS_RESPONSE = NULL
+                 WHERE ROWID = R.RID;
+
+                COMMIT;
+
+        END;
+
+    END LOOP;
+    
+
+END P_PROCESA_RESPONSE;
+
+PROCEDURE P_PROCESA_RESPONSE_ALU
+IS
+  v_error VARCHAR2(200);
+BEGIN
+
+    FOR R IN (
+        SELECT ROWID AS RID,
+               ID,
+               OP_TYPE,
+               STATUS
+          FROM INTEGRACION.ITZERST
+         WHERE STATUS_RESPONSE IS NULL
+           AND STATUS IN ('PROCESSED_OK', 'PROCESSED_KO')
+         ORDER BY ID
+    )
+    LOOP
+
+        BEGIN
+            ------------------------------------------------------------
+            -- 1. Marcar el registro como PROCESSING_RESPONSE
+            ------------------------------------------------------------
+            UPDATE INTEGRACION.ITZERST
+               SET STATUS_RESPONSE = 'PROCESSING_RESPONSE'
+             WHERE ROWID = R.RID
+               AND STATUS_RESPONSE IS NULL;
+
+            COMMIT;
+
+            ------------------------------------------------------------
+            -- 2. Procesar según STATUS
+            ------------------------------------------------------------
+
+            IF R.STATUS = 'PROCESSED_KO' THEN
+
+                --------------------------------------------------------
+                -- PROCESSED_KO
+                -- REGISTROS CON ERROR
+                --------------------------------------------------------
+                v_error:= 'Falló la operación de '||R.OP_TYPE;
+                
+                  PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
+                            p_business_line => 'ONLINE',
+                            p_op_type       => R.OP_TYPE,
+                            p_term_code     => null,
+                            p_ptrm_code     => null,
+                            p_error_code    => R.OP_TYPE||'_ERR',
+                            p_error_message => v_error
+                        );
+
+            ELSIF R.STATUS = 'PROCESSED_OK' THEN
+
+                --------------------------------------------------------
+                -- PROCESSED_OK
+                -- Ejecutar procedimiento según OP_TYPE
+                --------------------------------------------------------
+
+                CASE R.OP_TYPE
+
+                    WHEN 'CREATE_ENRROLLMENT' THEN
+
+                        INTEGRACION.PKG_INT_BRIPACE_ENROLL.p_ins_dato_supl_enroll(
+                            p_id => R.ID
+                        );
+
+                    ELSE
+                       --los demas procesos en 'PROCESSED_OK' los pasa a COMPLETED_OK/COMPLETED KO
+                       PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_ESTADO_ITZERST( r.id, R.OP_TYPE, 'COMPLETED_OK');
+                       PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_ESTADO_ITZERST( r.id, R.OP_TYPE, 'COMPLETED_KO');
+
+                END CASE;
+
+            END IF;
+
+
+        EXCEPTION
+            WHEN OTHERS THEN
+
+                --------------------------------------------------------
+                -- Si ocurre un error, dejar nuevamente el registro
+                -- disponible para un próximo procesamiento
+                --------------------------------------------------------
+                UPDATE INTEGRACION.ITZERST
+                   SET STATUS_RESPONSE = NULL
+                 WHERE ROWID = R.RID;
+
+                COMMIT;
+
+        END;
+
+    END LOOP;
+    
+END P_PROCESA_RESPONSE_ALU;
+
+PROCEDURE P_ACTUALIZA_ESTADO_ITZBGSP (
+    P_ID_MAESTRO      IN INTEGRACION.ITZBGSP.ID%TYPE,
+    P_OP_TYPE         IN INTEGRACION.ITZBGSP.OP_TYPE%TYPE,
+    P_STATUS_RESPONSE IN INTEGRACION.ITZBGSP.STATUS_RESPONSE%TYPE
+)
+IS
+BEGIN
+
+    UPDATE INTEGRACION.ITZBGSP
+       SET STATUS_RESPONSE = P_STATUS_RESPONSE
+     WHERE STATUS = 'PROCESSED_OK'
+       AND OP_TYPE = P_OP_TYPE
+       AND ID = P_ID_MAESTRO;
+
+END P_ACTUALIZA_ESTADO_ITZBGSP;
+
+PROCEDURE P_ACTUALIZA_ESTADO_ITZERST (
+    P_ID              IN INTEGRACION.ITZERST.ID%TYPE,
+    P_OP_TYPE         IN INTEGRACION.ITZERST.OP_TYPE%TYPE,
+    P_STATUS_RESPONSE IN INTEGRACION.ITZERST.STATUS_RESPONSE%TYPE
+)
+IS
+BEGIN
+  IF P_STATUS_RESPONSE = 'COMPLETED_OK' THEN
+    UPDATE INTEGRACION.ITZERST
+       SET STATUS_RESPONSE = P_STATUS_RESPONSE
+     WHERE STATUS = 'PROCESSED_OK'
+       AND OP_TYPE = P_OP_TYPE
+       AND ID = P_ID;
+  ELSE     
+     UPDATE INTEGRACION.ITZERST
+       SET STATUS_RESPONSE = P_STATUS_RESPONSE
+     WHERE STATUS = 'PROCESSED_KO'
+       AND OP_TYPE = P_OP_TYPE
+       AND ID = P_ID;
+  END IF;
+END P_ACTUALIZA_ESTADO_ITZERST;
+
+PROCEDURE P_ACTUALIZA_INTERMEDIA_STATE (
+    P_TIPO        IN VARCHAR2,
+    P_ID_MAESTRO  IN NUMBER,
+    P_STATE_OLD   IN VARCHAR2,
+    P_STATE       IN VARCHAR2,
+    P_MENSAJE     IN VARCHAR2 DEFAULT NULL
+)
+IS
+BEGIN
+
+    IF P_STATE_OLD NOT IN ('SEND', 'APPLIED', 'FAIL') THEN
+        RAISE_APPLICATION_ERROR(
+            -20001,
+            'Estado anterior no válido: ' || P_STATE_OLD
+        );
+    END IF;
+
+    IF P_STATE NOT IN ('SEND', 'APPLIED', 'FAIL') THEN
+        RAISE_APPLICATION_ERROR(
+            -20002,
+            'Estado nuevo no válido: ' || P_STATE
+        );
+    END IF;
+
+
+    IF P_TIPO = 'CREATE_TERM' THEN
+
+        UPDATE INTEGRACION.SZRTMBP
+           SET SZRTMBP_STATE     = P_STATE,
+               SZRTMBP_STATE_DET = P_MENSAJE
+         WHERE SZRTMBP_STATE = P_STATE_OLD
+           AND SZRTMBP_ID_MAESTRO = P_ID_MAESTRO;
+
+
+    ELSIF P_TIPO = 'CREATE_NRC' THEN
+
+        UPDATE INTEGRACION.SZRSSBP
+           SET SZRSSBP_STATE     = P_STATE,
+               SZRSSBP_STATE_DET = P_MENSAJE
+         WHERE SZRSSBP_STATE = P_STATE_OLD
+           AND SZRSSBP_ID_MAESTRO = P_ID_MAESTRO;
+
+
+    ELSIF P_TIPO = 'CREATE_USER_TH' THEN
+
+        UPDATE INTEGRACION.SZRPEBP
+           SET SZRPEBP_STATE     = P_STATE,
+               SZRPEBP_STATE_DET = P_MENSAJE
+         WHERE SZRPEBP_STATE = P_STATE_OLD  AND 
+         SZRPEBP_ID_MAESTRO = P_ID_MAESTRO;
+         
+    ELSIF P_TIPO = 'CREATE_USER_ST' THEN
+
+        UPDATE INTEGRACION.SZRSTBP
+           SET SZRSTBP_STATE     = P_STATE,
+               SZRSTBP_STATE_DET = P_MENSAJE
+         WHERE SZRSTBP_STATE = P_STATE_OLD  AND 
+         SZRSTBP_ID_MAESTRO = P_ID_MAESTRO;
+
+
+    ELSE
+
+        RAISE_APPLICATION_ERROR(
+            -20003,
+            'Tipo no válido: ' || P_TIPO ||
+            '. Valores permitidos: CREATE_TERM, CREATE_NRC, CREATE_USER'
+        );
+
+    END IF;
+
+END P_ACTUALIZA_INTERMEDIA_STATE;
+
+ PROCEDURE p_obtener_config_api (
+        p_operacion IN  VARCHAR2,
+        p_url       OUT VARCHAR2,
+        p_method    OUT VARCHAR2,
+        p_path      OUT VARCHAR2
+    )
+    IS
+        v_path_base VARCHAR2(4000);
+        v_posicion  PLS_INTEGER;
+    BEGIN
+        -- Obtener URL base
+        p_url := PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
+            'ONLINE',
+            'INSTANAME',
+            'DEV_INT_BRIGTHSPACE'
+        );
+
+        -- Obtener configuración de la operación
+        v_path_base := PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
+            'ONLINE',
+            p_operacion,
+            'DEV_INT_BRIGTHSPACE'
+        );
+
+        -- Validar configuración
+        v_posicion := INSTR(v_path_base, ',');
+
+        IF v_path_base IS NULL OR v_posicion = 0 THEN
+            RAISE_APPLICATION_ERROR(
+                -20001,
+                'Configuración inválida para: ' || p_operacion
+            );
+        END IF;
+
+        -- Separar método y ruta
+        p_method := TRIM(SUBSTR(v_path_base, 1, v_posicion - 1));
+        p_path   := TRIM(SUBSTR(v_path_base, v_posicion + 1));
+
+    END p_obtener_config_api;
 
 
 END PKG_INT_BRIPACE_UTIL;
-

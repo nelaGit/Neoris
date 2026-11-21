@@ -1,4 +1,4 @@
-create or replace PACKAGE                                           PKG_INT_BRIPACE_PERS AS
+create or replace PACKAGE                            PKG_INT_BRIPACE_PERS AS
 
 -- Registra en tabla intermedia SZRPEBP datos del periodo capturados desde el trigger de DOCENTES******
      PROCEDURE p_registra_docente(
@@ -22,15 +22,19 @@ create or replace PACKAGE                                           PKG_INT_BRIP
 
 
 
--- Inserta datos suplementarios en tabla intermedia ITZSUPL
-PROCEDURE p_insert_itzsupl;
+-- Inserta datos adicionales docentes
+PROCEDURE p_insert_goradid(p_id_maestro NUMBER);
+
+-- Inserta datos adicionales alumnos
+PROCEDURE p_insert_goradid_alu(p_id_maestro NUMBER);
 
 
 -- Activa, inactiva docentes de SIAINST
  PROCEDURE p_act_inact_pers(
         p_pidm         NUMBER,
         p_term_code    VARCHAR2,
-        p_estado_doc   VARCHAR2);
+        p_estado_doc   VARCHAR2,
+        p_rol_new      VARCHAR2 default null);
         
         
         
@@ -50,36 +54,32 @@ FUNCTION fn_get_gorsdav_value (
 )
 RETURN VARCHAR2;
 
-PROCEDURE p_audit_siricnt
-(
-    p_pidm              IN SIRICNT.SIRICNT_PIDM%TYPE,
-    p_term_code_eff     IN SIRICNT.SIRICNT_TERM_CODE_EFF%TYPE,
-    p_fcnt_code         IN SIRICNT.SIRICNT_FCNT_CODE%TYPE,
-    p_cntr_code         IN SIRICNT.SIRICNT_CNTR_CODE%TYPE,
-    p_def_ind           IN SIRICNT.SIRICNT_DEF_IND%TYPE,
-    p_activity_date     IN SIRICNT.SIRICNT_ACTIVITY_DATE%TYPE,
-    p_version           IN SIRICNT.SIRICNT_VERSION%TYPE,
-    p_user_id           IN SIRICNT.SIRICNT_USER_ID%TYPE,
-    p_data_origin       IN SIRICNT.SIRICNT_DATA_ORIGIN%TYPE,
-    p_vpdi_code         IN SIRICNT.SIRICNT_VPDI_CODE%TYPE,
-    p_operation         IN VARCHAR2
-);
 
--- se va a eliminar
-PROCEDURE p_registra_persona(
-        p_pidm         NUMBER,
-        p_term_code    VARCHAR2
-    );
-    
 PROCEDURE p_registra_persona_int;
 
--- se va a eliminar 
--- Registra desde la tabla intermedia a la tabla de integracion
-PROCEDURE p_registra_persona_int_OLD ;
+PROCEDURE p_registra_alumnos;
+PROCEDURE p_registra_alumnos_int;
+
+FUNCTION f_existe_inf_ad ( p_pidm IN goradid.goradid_pidm%TYPE) RETURN VARCHAR2;
+
+FUNCTION f_get_inf_ad (  p_pidm IN GORADID.GORADID_PIDM%TYPE) RETURN GORADID.GORADID_ADDITIONAL_ID%TYPE;
+
+FUNCTION f_existe_email ( p_pidm IN number) RETURN VARCHAR2;
+
+PROCEDURE p_inactive_user_alu;
+
+PROCEDURE P_PROCESA_ESTADO_ALU (
+    P_OP_TYPE   IN VARCHAR2,
+    P_IS_ACTIVE IN VARCHAR2
+);
+
+FUNCTION F_VALIDA_RETENCION (
+    P_PIDM     IN NUMBER,
+    P_OP_TYPE  IN VARCHAR2
+) RETURN VARCHAR2;
 
 END PKG_INT_BRIPACE_PERS;
-/
-create or replace PACKAGE BODY                                                                          PKG_INT_BRIPACE_PERS AS  
+create or replace PACKAGE BODY                              PKG_INT_BRIPACE_PERS AS  
 
     PROCEDURE p_cambio_rol(
         p_pidm         NUMBER,
@@ -200,9 +200,10 @@ create or replace PACKAGE BODY                                                  
                     GB_COMMON.F_GET_ID(p_pidm);
                    
 
-                PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                     p_business_line => 'ONLINE',
                     p_op_type       => v_tipo_enroll,
+                    p_id_maestro    => v_seq,
                     p_term_code     => p_term_code,
                     p_ptrm_code     => NULL,
                     p_crn            => NULL,
@@ -244,8 +245,13 @@ create or replace PACKAGE BODY                                                  
     v_op_type VARCHAR2(30);
     v_cant_cntr NUMBER;
     v_fcnt_config VARCHAR2(4000);
+    v_exist_cein NUMBER;
+    v_error_message   VARCHAR2(300);
+    
+    v_tipo_user        VARCHAR2(15):= 'CREATE_USER_TH';
 
     BEGIN
+     
     -- Valida que el periodo registrado sea el de la variable GTVSDAX
     -- indica el periodo donde los docentes(SIAINST) tienen los datos suplementarios SMART_ONLINE, SMART_FLEX_SMART_CYP
       v_per_doc:= pkg_int_bripace_term.f_get_gtvsdax(
@@ -298,11 +304,11 @@ create or replace PACKAGE BODY                                                  
             AND SIRICNT_FCNT_CODE = p_fcnt_code;
             
          IF v_cant_cntr > 1 THEN
-            v_error:= 'No se identifica linea de negocio por duplicidad, ID DOCENTE: '|| v_id;
+            v_error:= 'No se identifica linea de negocio por duplicidad, ID docente: '|| v_id;
           
-           PKG_INT_BRIPACE_TERM.p_registra_error_log(
+           PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
                         p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
+                        p_op_type       => v_tipo_user, 
                         p_term_code     => p_term_code,
                         p_pidm          => p_pidm,
                         p_error_code    => 'ERR_ID_ROL_DUP',
@@ -310,11 +316,20 @@ create or replace PACKAGE BODY                                                  
           RETURN; -- Si esta duplicado se sale
          END IF;
        
+       -- Validacion de datos adicionales
           SELECT COUNT(1) 
                       INTO v_existe_inf_ad 
                       FROM  GORADID
                       WHERE GORADID_PIDM = p_pidm
                         AND GORADID_ADID_CODE= 'LMBO';
+                        
+         -- VALIDO SI EL DOCENTE  TIENE CORREO CEIN 
+            SELECT COUNT(*) INTO v_exist_cein
+                  FROM GOREMAL g
+                 WHERE g.GOREMAL_PIDM = p_pidm
+                   AND g.GOREMAL_EMAL_CODE = 'CEIN'
+                   AND g.GOREMAL_PREFERRED_IND = 'Y';
+                   
            Begin
                SELECT SZRPEBP_ROL, SZRPEBP_ID_MAESTRO into v_rol_int, v_id_maestro
                  FROM SZRPEBP WHERE SZRPEBP_PIDM = p_pidm;
@@ -331,7 +346,8 @@ create or replace PACKAGE BODY                                                  
                     PKG_INT_BRIPACE_PERS.p_act_inact_pers(
                                         p_pidm   =>   p_pidm    ,
                                         p_term_code =>  p_term_code  ,
-                                        p_estado_doc => 'RC' );
+                                        p_estado_doc => 'RC' ,
+                                        p_rol_new  =>   p_cntr_code);
                  
                  ELSE
                      PKG_INT_BRIPACE_PERS.p_act_inact_pers(
@@ -342,17 +358,35 @@ create or replace PACKAGE BODY                                                  
                                     
                -- sin datos adicionales, se CREA                
                ELSE 
-                  r_docente.SZRPEBP_PIDM:= p_pidm;
-                  r_docente.SZRPEBP_TERM_CODE:= p_term_code;
-                  r_docente.SZRPEBP_LINE_NEG:= p_fcnt_code;
-                  r_docente.SZRPEBP_ROL:= p_cntr_code;
-                  r_docente.SZRPEBP_DATA_ORIGIN:= 'SIRINCT';
-                
-               
-                  PKG_INT_BRIPACE_PERS.p_intermedia_szrpebp(
-                    p_registro      => r_docente,
-                    p_business_line => 'ONLINE',
-                    p_op_type       => 'CREATE_TERM');
+                 IF v_exist_cein >= 1 THEN
+                      r_docente.SZRPEBP_PIDM:= p_pidm;
+                      r_docente.SZRPEBP_TERM_CODE:= p_term_code;
+                      r_docente.SZRPEBP_LINE_NEG:= p_fcnt_code;
+                      r_docente.SZRPEBP_ROL:= p_cntr_code;
+                      r_docente.SZRPEBP_DATA_ORIGIN:= 'SIRINCT';
+                    
+                   
+                      PKG_INT_BRIPACE_PERS.p_intermedia_szrpebp(
+                        p_registro      => r_docente,
+                        p_business_line => 'ONLINE',
+                        p_op_type       => 'CREATE_TERM');
+                 ELSE -- no tiene correo LOG
+                   v_error_message:= 'El docente no tiene un correo CEIN marcado como preferido ' ||
+                                     '(GOREMAL_PREFERRED_IND = Y).';
+                   
+                   PKG_INT_BRIPACE_UTIL.p_registra_error_log(
+                        p_business_line => 'ONLINE',
+                        p_op_type       => v_tipo_user, 
+                        p_term_code     => p_term_code,
+                        p_ptrm_code     => NULL,
+                        p_data_origin   => 'SIRICNT',
+                        p_crn           => NULL,
+                        p_pidm          => p_pidm,
+                        p_state         => 'ERROR',
+                        p_error_code    => 'EMAIL_NOT_FOUND',
+                        p_error_message => v_error_message
+                    );
+                 END IF;
                END IF;
        
           -- cambio de rol
@@ -377,17 +411,24 @@ create or replace PACKAGE BODY                                                  
              END IF;
          
          ELSE -- DELETE, se inactiva cuando no quedan registros en SIRINCT para ese periodo
-           SELECT count(*) INTO v_cant_cntr
-           FROM SIRICNT
-          WHERE SIRICNT_PIDM = p_pidm
-            AND SIRICNT_TERM_CODE_EFF = p_term_code;
+            IF v_existe_inf_ad = 0 THEN
             
-           IF v_cant_cntr = 0 THEN
-               PKG_INT_BRIPACE_PERS.p_act_inact_pers(
-                                    p_pidm   =>   p_pidm    ,
-                                    p_term_code =>  p_term_code  ,
-                                    p_estado_doc => 'IN' );
-            END IF;
+              DELETE SZRPEBP WHERE SZRPEBP_PIDM = p_pidm
+                AND SZRPEBP_STATE = 'NEW';
+            
+            ELSE 
+               SELECT count(*) INTO v_cant_cntr
+               FROM SIRICNT
+              WHERE SIRICNT_PIDM = p_pidm
+                AND SIRICNT_TERM_CODE_EFF = p_term_code;
+                
+               IF v_cant_cntr = 0 THEN
+                   PKG_INT_BRIPACE_PERS.p_act_inact_pers(
+                                        p_pidm   =>   p_pidm    ,
+                                        p_term_code =>  p_term_code  ,
+                                        p_estado_doc => 'IN' );                            
+                END IF;--v_cant_cntr
+            END IF;--v_exist_cein
          END IF; -- p_operacion
         
        END IF; --v_fcnt_config         
@@ -457,7 +498,7 @@ create or replace PACKAGE BODY                                                  
         -- LOG ÉXITO
         ------------------------------------------------------------------
 /*
-        PKG_INT_BRIPACE_TERM.p_registra_error_log(
+        PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
             p_business_line => p_business_line,
             p_op_type       => p_op_type,
             p_term_code     => p_registro.SZRPEBP_TERM_CODE,
@@ -472,7 +513,7 @@ create or replace PACKAGE BODY                                                  
     EXCEPTION
         WHEN OTHERS THEN
 
-            PKG_INT_BRIPACE_TERM.p_registra_error_log(
+            PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                 p_business_line => p_business_line,
                 p_op_type       => p_op_type,
                 p_term_code     => p_registro.SZRPEBP_TERM_CODE,
@@ -531,13 +572,22 @@ create or replace PACKAGE BODY                                                  
    
    l_registros PKG_INT_BRIPACE_UTIL.t_itzbgsp_tab;
    
+   v_tipo_user        VARCHAR2(15):= 'CREATE_USER_TH';
+   
+   
 
-BEGIN
-
+BEGIN  
     ------------------------------------------------------------------
     -- Configuración
     ------------------------------------------------------------------
-
+    
+    PKG_INT_BRIPACE_UTIL.p_obtener_config_api(
+        p_operacion => 'CREA_USER', -- funciona para docente y alumno
+        p_url       => v_url,
+        p_method    => v_method,
+        p_path      => v_path
+    );
+/*
     v_url :=
         PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
             'ONLINE',
@@ -567,7 +617,7 @@ BEGIN
             INSTR(v_path_base, ',') + 1
         );
 
-
+*/
     ------------------------------------------------------------------
     -- Roles de Brightspace
     ------------------------------------------------------------------
@@ -626,9 +676,9 @@ BEGIN
     )
     LOOP
 
-        PKG_INT_BRIPACE_TERM.p_registra_error_log(
+        PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
             p_business_line => 'ONLINE',
-            p_op_type       => 'CREATE_USER',
+            p_op_type       => v_tipo_user, 
             p_term_code     => e.term_code,
             p_pidm          => e.pidm,
             p_error_code    => 'EMAIL_NOT_FOUND',
@@ -715,7 +765,7 @@ BEGIN
                 ------------------------------------------------------------------
               PKG_INT_BRIPACE_UTIL.p_genera_inserta_itzbgsp(
                     p_business_line => 'ONLINE',
-                    p_op_type       => 'CREATE_USER',
+                    p_op_type       => v_tipo_user, --'CREATE_USER',
                     p_endpoint      => v_url || v_path,
                     p_method        => v_method,
                     p_body          => l_body,
@@ -734,22 +784,24 @@ BEGIN
                 ------------------------------------------------------------------
                 IF SQL%ROWCOUNT = 1 THEN
                     v_error_message :=
-                        'DOCENTE ' ||
+                        'Docente ' ||
                         r.spriden_id ||
                         ' creado correctamente';
 
-                    PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                    PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                         p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
+                        p_op_type       => v_tipo_user, --'CREATE_USER',
+                        p_id_maestro    => v_seq,
                         p_term_code     => r.term_code,
                         p_ptrm_code     => NULL,
+                        p_data_origin   => 'SIRICNT',
                         p_crn           => NULL,
                         p_pidm          => r.pidm,
                         p_state         => 'OK',
                         p_error_code    => 'OK',
                         p_error_message => v_error_message
                     );
-
+                    
                 END IF;
 
             END IF;
@@ -771,11 +823,12 @@ BEGIN
                 -- Registrar error
                 ------------------------------------------------------------------
 
-                PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                     p_business_line => 'ONLINE',
-                    p_op_type       => 'CREATE_USER',
+                    p_op_type       => v_tipo_user, --'CREATE_USER',
                     p_term_code     => r.term_code,
                     p_ptrm_code     => NULL,
+                    p_data_origin   => 'SIRICNT',
                     p_crn           => NULL,
                     p_pidm          => r.pidm,
                     p_state         => 'ERROR_CREATE_USER',
@@ -901,7 +954,9 @@ BEGIN
                     p_business_line => 'ONLINE',
                     p_op_type       => i.action_user,
                     p_registros     => l_registros,
-                    p_id_generado   => v_seq
+                    p_id_generado   => v_seq,
+                    p_pidm          => i.pidm,
+                    p_id_spriden    => i.spriden_id
                 );
                 
                  UPDATE SZRPEBP
@@ -911,6 +966,7 @@ BEGIN
                  WHERE  SZRPEBP_PIDM= i.pidm;
                  
                  
+                 
                  v_error_message :=
                     'El docente ' ||
                     i.spriden_id ||
@@ -918,11 +974,13 @@ BEGIN
                     i.action_label_user ||
                     ' correctamente';
 
-                PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                     p_business_line => 'ONLINE',
                     p_op_type       => i.action_user,
+                    p_id_maestro    => v_seq,
                     p_term_code     => i.term_code,
                     p_ptrm_code     => NULL,
+                    p_data_origin   => 'SIRICNT',
                     p_crn            => NULL,
                     p_pidm          => i.pidm,
                     p_state         => 'OK',
@@ -960,7 +1018,9 @@ BEGIN
                         ),
                     p_method        => v_method,
                     p_body          => l_body,
-                    p_id_generado   => v_seq
+                    p_id_generado   => v_seq,
+                    p_pidm          => i.pidm,
+                    p_id_spriden    => i.spriden_id
                 );
                 
                   ------------------------------------------------------------------
@@ -987,18 +1047,20 @@ BEGIN
                     i.action_label_user ||
                     ' correctamente';
 
-                PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                     p_business_line => 'ONLINE',
                     p_op_type       => i.action_user,
+                    p_id_maestro    => v_seq,
                     p_term_code     => i.term_code,
                     p_ptrm_code     => NULL,
+                    p_data_origin   => 'SIRICNT',
                     p_crn            => NULL,
                     p_pidm          => i.pidm,
                     p_state         => 'OK',
                     p_error_code    => 'OK',
                     p_error_message => v_error_message
                 );
-
+                
 
             EXCEPTION
                 WHEN OTHERS THEN
@@ -1008,11 +1070,12 @@ BEGIN
                     -- Registrar error
                     ------------------------------------------------------------------
 
-                    PKG_INT_BRIPACE_TERM.p_registra_error_log(
+                    PKG_INT_BRIPACE_UTIL.p_registra_error_log(
                         p_business_line => 'ONLINE',
                         p_op_type       => i.action_user,
                         p_term_code     => i.term_code,
                         p_ptrm_code     => NULL,
+                        p_data_origin   => 'SIRICNT',
                         p_crn            => NULL,
                         p_pidm          => i.pidm,
                         p_state         => 'ERROR',
@@ -1047,7 +1110,8 @@ END p_registra_persona_int;
       PROCEDURE p_act_inact_pers(
         p_pidm         NUMBER,
         p_term_code    VARCHAR2,
-        p_estado_doc   VARCHAR2
+        p_estado_doc   VARCHAR2,
+        p_rol_new      VARCHAR2 default null
     ) IS
 	
 	v_rol	   VARCHAR2(20);
@@ -1087,6 +1151,7 @@ END p_registra_persona_int;
                    BEGIN
                      UPDATE SZRPEBP
                        SET SZRPEBP_STATE = p_estado_doc,
+                       SZRPEBP_ROL = NVL(p_rol_new, SZRPEBP_ROL),
                        SZRPEBP_USER_ID = USER,
                        SZRPEBP_ACTIVITY_DATE = SYSDATE,
                        SZRPEBP_OPERACION = v_operacion
@@ -1107,10 +1172,12 @@ END p_registra_persona_int;
 
 -- Inserta datos supl en tabla intermedia de Periodo
 
-  PROCEDURE p_insert_itzsupl Is
+  PROCEDURE p_insert_goradid(p_id_maestro NUMBER) Is
     r_pk_parenttab    gobsdtb.gobsdtb_pk_dynsql%TYPE;
     v_rid              varchar2(18):=null;
     r_gorsdav_rowid   varchar2(18):=null;
+    
+    v_tipo_user        VARCHAR2(15):= 'CREATE_USER_TH';
 
   -- mer tmp hay que meter un loop aqui para que vaya insertando en ITZSUPL y luego en datos suplementarios
     Cursor c_supl is
@@ -1120,6 +1187,7 @@ END p_registra_persona_int;
              SZRPEBP_ID_MAESTRO id_maestro
         from SZRPEBP B
        WHERE B.SZRPEBP_STATE = 'SEND'
+         AND SZRPEBP_ID_MAESTRO = p_id_maestro
          --AND B.SZRPEBP_LINE_NEG = 'ON'
          ;
 
@@ -1156,7 +1224,7 @@ END p_registra_persona_int;
                    ON M.SZRPEBP_ID_MAESTRO = B.ID
            WHERE M.SZRPEBP_PIDM = i.pidm
              AND B.STATUS = 'PROCESSED_OK'
-             AND B.OP_TYPE = 'CREATE_USER'
+             AND B.OP_TYPE = v_tipo_user
              AND B.RESPONSE IS NOT NULL
              AND JSON_VALUE(B.RESPONSE, '$[0].response.code') = '200'
              AND JSON_EXISTS(B.RESPONSE,'$[0].response.body.UserId')
@@ -1168,22 +1236,98 @@ END p_registra_persona_int;
                    AND S.GORADID_ADID_CODE = 'LMBO'
              );
 
-
-          UPDATE  ITZBGSP 
-            SET STATUS = 'COMPLETED'
-          where STATUS='PROCESSED_OK'
-            and OP_TYPE = 'CREATE_USER'
-            and ID= I.id_maestro;
             
-         UPDATE SZRPEBP
-            SET SZRPEBP_STATE = 'APPLIED'
-            WHERE SZRPEBP_STATE = 'SEND'
-              AND SZRPEBP_PIDM = i.pidm
-              AND SZRPEBP_ID_MAESTRO = i.id_maestro;
+           PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_ESTADO_ITZBGSP( i.ID_MAESTRO, v_tipo_user, 'COMPLETED_OK');        
+            
+           PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_INTERMEDIA_STATE(
+                P_TIPO       => v_tipo_user, 
+                P_ID_MAESTRO => I.ID_MAESTRO,
+                P_STATE_OLD  => 'SEND',
+                P_STATE      => 'APPLIED'
+            );
               
       End Loop;
       
-    END p_insert_itzsupl;
+    END p_insert_goradid;
+    
+    -- Inserta en datos suplemen los datos del alumno
+      PROCEDURE p_insert_goradid_alu(p_id_maestro NUMBER) Is
+      r_pk_parenttab    gobsdtb.gobsdtb_pk_dynsql%TYPE;
+      v_rid              varchar2(18):=null;
+      r_gorsdav_rowid   varchar2(18):=null;
+    
+      v_tipo_user        VARCHAR2(15):= 'CREATE_USER_ST';
+
+  -- mer tmp hay que meter un loop aqui para que vaya insertando en ITZSUPL y luego en datos suplementarios
+    Cursor c_supl is
+      select SZRSTBP_PIDM PIDM, 
+            -- SZRPEBP_LINE_NEG ptrm_code, 
+             SZRSTBP_ROL_ID ROL,
+             SZRSTBP_ID_MAESTRO id_maestro
+        from szrstbp B
+       WHERE B.SZRSTBP_STATE = 'SEND'
+         AND SZRSTBP_ID_MAESTRO = p_id_maestro
+         --AND B.SZRPEBP_LINE_NEG = 'ON'
+         ;
+
+    BEGIN
+    -- SE INserta en datos adicionales si el RESPONSE es 200
+      
+       For i in c_supl LOOP
+       
+           INSERT INTO GORADID
+           (
+              GORADID_PIDM,
+              GORADID_ADDITIONAL_ID,
+              GORADID_ADID_CODE,
+              GORADID_USER_ID,
+              GORADID_ACTIVITY_DATE,
+              GORADID_DATA_ORIGIN,
+              GORADID_SURROGATE_ID,
+              GORADID_VERSION,
+              GORADID_VPDI_CODE
+           )
+           SELECT     M.SZRSTBP_PIDM,
+               JSON_VALUE(B.RESPONSE,
+                         '$[0].response.body.UserId'
+                         RETURNING VARCHAR2(20))      AS GORADID_ADDITIONAL_ID,
+               'LMBO', -- meter en GTVSDAX
+                 USER,
+                SYSDATE,
+                'BRIGTHSPACE',
+                NULL,
+                1,
+                NULL
+           FROM ITZBGSP B
+                INNER JOIN SZRSTBP M
+                   ON M.SZRSTBP_ID_MAESTRO = B.ID
+           WHERE M.SZRSTBP_PIDM = i.pidm
+             AND B.STATUS = 'PROCESSED_OK'
+             AND B.OP_TYPE = v_tipo_user
+             AND B.RESPONSE IS NOT NULL
+             AND JSON_VALUE(B.RESPONSE, '$[0].response.code') = '200'
+             AND JSON_EXISTS(B.RESPONSE,'$[0].response.body.UserId')
+             AND NOT EXISTS
+             (
+                 SELECT 1
+                 FROM GORADID S
+                 WHERE S.GORADID_PIDM =  M.SZRSTBP_PIDM
+                   AND S.GORADID_ADID_CODE = 'LMBO'
+             );
+
+            
+           PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_ESTADO_ITZBGSP( i.ID_MAESTRO, v_tipo_user, 'COMPLETED_OK');        
+            
+           PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_INTERMEDIA_STATE(
+                P_TIPO       => v_tipo_user, 
+                P_ID_MAESTRO => I.ID_MAESTRO,
+                P_STATE_OLD  => 'SEND',
+                P_STATE      => 'APPLIED'
+            );
+              
+      End Loop;
+      
+    END p_insert_goradid_alu;
 
 
     -- Funcion que retorna el valor de comments de la tabla GTVSDAX
@@ -1205,24 +1349,9 @@ END p_registra_persona_int;
 
         RETURN l_value;
 
-    EXCEPTION
-        WHEN NO_DATA_FOUND THEN
-            RAISE_APPLICATION_ERROR(
-                -20001,
-                'No existe configuración en GTVSDAX. ' ||
-                'EXTERNAL_CODE=' || p_external_code ||
-                ', INTERNAL_CODE=' || p_internal_code ||
-                ', GROUP=' || p_internal_code_group
-            );
-
-        WHEN TOO_MANY_ROWS THEN
-            RAISE_APPLICATION_ERROR(
-                -20002,
-                'Existen múltiples configuraciones en GTVSDAX. ' ||
-                'EXTERNAL_CODE=' || p_external_code ||
-                ', INTERNAL_CODE=' || p_internal_code ||
-                ', GROUP=' || p_internal_code_group
-            );
+    EXCEPTION 
+      WHEN OTHERS THEN 
+        NULL;
     END f_get_gtvsdax;
 
  FUNCTION fn_get_gorsdav_value (
@@ -1260,603 +1389,819 @@ EXCEPTION
     WHEN NO_DATA_FOUND THEN
         RETURN NULL;
 END;
-PROCEDURE p_audit_siricnt
-(
-    p_pidm              IN SIRICNT.SIRICNT_PIDM%TYPE,
-    p_term_code_eff     IN SIRICNT.SIRICNT_TERM_CODE_EFF%TYPE,
-    p_fcnt_code         IN SIRICNT.SIRICNT_FCNT_CODE%TYPE,
-    p_cntr_code         IN SIRICNT.SIRICNT_CNTR_CODE%TYPE,
-    p_def_ind           IN SIRICNT.SIRICNT_DEF_IND%TYPE,
-    p_activity_date     IN SIRICNT.SIRICNT_ACTIVITY_DATE%TYPE,
-    p_version           IN SIRICNT.SIRICNT_VERSION%TYPE,
-    p_user_id           IN SIRICNT.SIRICNT_USER_ID%TYPE,
-    p_data_origin       IN SIRICNT.SIRICNT_DATA_ORIGIN%TYPE,
-    p_vpdi_code         IN SIRICNT.SIRICNT_VPDI_CODE%TYPE,
-    p_operation         IN VARCHAR2
-)
+
+-- registra masivamente en tabla intermedia a la creacion de alumnos
+
+PROCEDURE p_registra_alumnos
 IS
+    v_periodo VARCHAR2(2);
 BEGIN
+    -- Obtener el periodo ONLINE parametrizado
+    v_periodo := PKG_INT_BRIPACE_TERM.F_GET_GTVSDAX(
+                     'ONLINE',
+                     'PERIODO',
+                     'DEV_INT_BRIGTHSPACE'
+                 );
 
-    INSERT INTO PRGNREP.SZASIRI
-    (
-        SZASIRI_PIDM,
-        SZASIRI_TERM_CODE_EFF,
-        SZASIRI_FCNT_CODE,
-        SZASIRI_CNTR_CODE,
-        SZASIRI_DEF_IND,
-        SZASIRI_ACTIVITY_DATE,
-        SZASIRI_VERSION,
-        SZASIRI_USER_ID,
-        SZASIRI_DATA_ORIGIN,
-        SZASIRI_VPDI_CODE,
-        SZASIRI_OPERATION
-    )
-    VALUES
-    (
-        p_pidm,
-        p_term_code_eff,
-        p_fcnt_code,
-        p_cntr_code,
-        p_def_ind,
-        p_activity_date,
-        p_version,
-        p_user_id,
-        p_data_origin,
-        p_vpdi_code,
-        p_operation
-    );
-
-END p_audit_siricnt;
-
--- proc para ELIMINAR
-PROCEDURE p_registra_persona(
-        p_pidm         NUMBER,
-        p_term_code    VARCHAR2
-    ) IS
-	
-	v_rol	   VARCHAR2(20);
-    r_pk_parenttab    gobsdtb.gobsdtb_pk_dynsql%TYPE;
-    v_rid              varchar2(18):=null;
-    v_error     VARCHAR2(500);
-    
-    v_per_doc    VARCHAR2(6);
-    v_per_online VARCHAR2(6);
-    v_existe_doc NUMBER;
-    v_existe_inf_ad number;
-    v_id VARCHAR2(9);
-    v_rol_int VARCHAR2(20);
-
-    BEGIN
-    -- Valida que el periodo registrado sea el de la variable GTVSDAX
-    -- indica el periodo donde los docentes(SIAINST) tienen los datos suplementarios SMART_ONLINE, SMART_FLEX_SMART_CYP
-     v_per_doc:= pkg_int_bripace_term.f_get_gtvsdax(
-                'ONLINE',
-                'PER_DOC',
-                'DEV_INT_BRIGTHSPACE'
-            );
-    
-    dbms_output.put_line('registra_per. v_per_doc: '||v_per_doc);
-    
-	   IF v_per_doc = p_term_code THEN -- si el periodo de gtvsdax es el periodo del docente de sianst entonces se va en la integracion
-        
-            SELECT ROWID into v_rid  
-              FROM SIBINST 
-             WHERE SIBINST_PIDM = p_pidm AND SIBINST_TERM_CODE_EFF = p_term_code;
-             
-              r_pk_parenttab:=gp_goksdif.f_get_pk('SIBINST',v_rid);
-             
-              v_rol:=   UPPER(TRIM(PKG_INT_BRIPACE_PERS.fn_get_gorsdav_value(
-                                        'SIBINST', 'SMART_ONLINE', 
-                                        r_pk_parenttab)));
-             
-              v_id := GB_COMMON.F_GET_ID(p_pidm);
-                                        
-             -- validacion del cambio de ROL
-             -- Se valida que rol tiene en la tabla intermedia.
-             -- Si el ROL es diferente debe realizar el proceso de cambio de ROL y no otro
-             Begin
-               SELECT SZRPEBP_ROL into v_rol_int
-                 FROM SZRPEBP WHERE SZRPEBP_PIDM = p_pidm;
-             Exception When Others Then
-               NULL;
-             End;
-             
-            IF v_rol_int != v_rol THEN
-              p_cambio_rol( p_pidm        => p_pidm,    
-                            p_term_code   => p_term_code,
-                            p_id_ma       => NULL,
-                            p_rol         => v_rol); -- LLAMA PROC DE CAMBIO DE ROL
-            ELSE
-            -- Sino, continúa con el proceso de creacion, activacion o inactivacion de acuerdo al caso
-                           
-                
-                -- Valida si tiene informacion adicional en spaiden
-                 SELECT COUNT(1) 
-                      INTO v_existe_inf_ad 
-                      FROM  GORADID
-                      WHERE GORADID_PIDM = p_pidm
-                        AND GORADID_ADID_CODE= 'LMBO';
-                        
-            
-    dbms_output.put_line('registra_per. v_rol: '||v_rol||' v_existe_inf_ad '||v_existe_inf_ad);
-               
-               -- Si el rol es ON, AS y no tiene informacion adicional, se debe crear en la integracion
-               IF v_rol IN ('ON', 'AS') AND v_existe_inf_ad = 0 THEN
-                -- IF v_existe_doc = 0   THEN -- SI NO existe y tiene DATO SUPLEMENTARIO ON o AS, debe insertar en tabla intermedia
-                
-                           -- validamos si el docente ya existe en la tabla intermedia
-               select count(*) into v_existe_doc
-                 from SZRPEBP 
-                where SZRPEBP_PIDM = p_pidm;
-                
-                IF v_existe_doc >= 1 THEN
-                  v_error := 'El docente '|| v_id ||' ya existe en la integración';
-                
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => p_term_code,
-                        p_pidm          => p_pidm,
-                        p_error_code    => 'CREATE_USER_ERR',
-                        p_error_message => v_error);
-                  RETURN; -- SI EXISTE EL DOCENTE SE SALE
-                END IF;
-               
-               
-    dbms_output.put_line(' ENTRA PRIMER IF');
-    
-                   BEGIN
-                        INSERT INTO SZRPEBP(
-                            SZRPEBP_PIDM,
-                            SZRPEBP_TERM_CODE,
-                            SZRPEBP_LINE_NEG,
-                            SZRPEBP_ROL,
-                            SZRPEBP_STATE,
-                            SZRPEBP_OPERACION,
-                            SZRPEBP_VERSION,
-                            SZRPEBP_DATA_ORIGIN,
-                            SZRPEBP_USER_ID,
-                            SZRPEBP_ACTIVITY_DATE
-                        )
-                        VALUES (
-                            p_pidm,
-                            p_term_code,
-                            0, -- Sin linea de neg
-                            v_rol,
-                            'NEW',
-                            'I',
-                            1,
-                            'SIBINST',
-                            USER,
-                            SYSDATE
-                        );
-                EXCEPTION WHEN OTHERS THEN            
-                  v_error := SQLERRM;
-                  
-                    PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => p_term_code,
-                        p_pidm          => p_pidm,
-                        p_error_code    => 'ORACLE_ERR',
-                        p_error_message => v_error);
-                   END;
-                
-               ELSIF (v_rol NOT IN ('ON', 'AS') OR (v_rol IS NULL)) AND v_existe_inf_ad >=1 THEN
-               -- INACTIVAR usuario MER TMP
-               
-    dbms_output.put_line('registra_per.INACTIVA');
-    
-                 PKG_INT_BRIPACE_PERS.p_act_inact_pers(
-                                p_pidm   =>   p_pidm    ,
-                                p_term_code =>  p_term_code  ,
-                                p_estado_doc => 'IN' );
-                 
-                 
-                ELSIF v_rol IN ('ON', 'AS') AND v_existe_inf_ad >=1 THEN
-               -- ACTIVAR usuario MER TMP
-                BEGIN
-               
-               
-    dbms_output.put_line('registra_per. ACTIVA');
-    
-                  PKG_INT_BRIPACE_PERS.p_act_inact_pers(
-                                p_pidm   =>   p_pidm    ,
-                                p_term_code =>  p_term_code  ,
-                                p_estado_doc => 'AC' );
-                END;
-               
-               ELSE 
-                 
-    dbms_output.put_line(' ENTRA SEG IF');
-                
-                 v_error:= 'No se identifica linea de negocio o ID_ROL no permitido.'|| v_id;
-               
-                 PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => p_term_code,
-                        p_pidm          => p_pidm,
-                        p_error_code    => 'ERR_ID_ROL',
-                        p_error_message => v_error);
-               
-               END IF;
-        END IF; -- rol
-    END IF; -- v_per_doc = p_term_code
-    
-    
-    dbms_output.put_line(' ENTRA FIN.'||LENGTH(v_rol));
-  END p_registra_persona;
-  
-      PROCEDURE p_registra_persona_int_OLD IS
-
-        l_json        CLOB;
-
-        -- Configuración Brightspace
-        v_url              GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_path_base        GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_path             GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_method           GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_org_type         GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_org_parent       GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_seq              number;
-        
-        v_role_id_on GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_role_id_as GTVSDAX.GTVSDAX_COMMENTS%TYPE;
-        v_existe_inf_ad number;
-        
-        v_error             VARCHAR2(200);
-        v_error_message     VARCHAR2(1000);
-      
-
-    BEGIN
-
-        ------------------------------------------------------------------
-        -- Configuración
-        ------------------------------------------------------------------
-        v_url :=
-            PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
-                'ONLINE',
-                'INSTANAME',
-                'DEV_INT_BRIGTHSPACE'
-            );
-
-        v_path_base :=
-            PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
-                'ONLINE',
-                'CREA_USER',
-                'DEV_INT_BRIGTHSPACE'
-            );
-
- -- como en el path esta incluido el metodo, lo separamos para luego usarlo adecuadamente 
- -- en los valores del JSON
-
-         v_method:= SUBSTR(v_path_base,1, INSTR(v_path_base, ',') -1);
-
-         v_path:= SUBSTR(v_path_base, INSTR(v_path_base, ',') + 1);
-
-        v_role_id_on :=
-            PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
-                'ONLINE',
-                'ROL_DOC_ON',
-                'DEV_INT_BRIGTHSPACE'
-            );
-
-        v_role_id_as :=
-            PKG_INT_BRIPACE_PERS.f_get_gtvsdax(
-                'ONLINE',
-                'ROL_DOC_AS',
-                'DEV_INT_BRIGTHSPACE'
-            );
-    dbms_output.put_line('mensaje 1');
-    
-    -- validacion de registros CEIN Y PREFERIDO
-    
-      FOR e IN (
-        SELECT a.SZRPEBP_PIDM pidm, SZRPEBP_TERM_CODE term_code
-          FROM SZRPEBP a
-         WHERE a.SZRPEBP_STATE = 'NEW'
-           AND NOT EXISTS (
-                SELECT 1
-                  FROM GOREMAL g
-                 WHERE g.GOREMAL_PIDM = a.SZRPEBP_PIDM
-                   AND g.GOREMAL_EMAL_CODE = 'CEIN'
-                   AND g.GOREMAL_PREFERRED_IND = 'Y'
-           )
+    -- Recorrer alumnos inscritos en el periodo ONLINE,
+    -- que no exista en SZRSTBP, que solo exista 1 vez porque es creación
+    FOR R IN (
+        SELECT DISTINCT
+               SFRSTCR_PIDM,
+               SFRSTCR_TERM_CODE
+        FROM SFRSTCR
+        WHERE SUBSTR(SFRSTCR_TERM_CODE, 5, 2) = v_periodo
+          AND PKG_INT_BRIPACE_PERS.F_EXISTE_INF_AD(
+                  SFRSTCR_PIDM
+              ) = 'N'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM SZRSTBP T
+              WHERE T.SZRSTBP_PIDM = SFRSTCR_PIDM
+              --  AND T.SZRSTBP_TERM_CODE = SFRSTCR_TERM_CODE
+                AND SZRSTBP_STATE != 'FAIL'
+                AND T.SZRSTBP_LINE_NEG = 'ON'
+          )
+         -- and SFRSTCR_PIDM= 1159406 --mer tmp
     )
     LOOP
-    
-        PKG_INT_BRIPACE_TERM.p_registra_error_log(
-            p_business_line => 'ONLINE',
-            p_op_type       => 'CREATE_USER',
-            p_term_code     => e.term_code,
-            p_pidm          => e.pidm,
-            p_error_code    => 'EMAIL_NOT_FOUND',
-            p_error_message => 'El docente no tiene un correo CEIN marcado como preferido (GOREMAL_PREFERRED_IND = Y).'
-        );
-    
-    END LOOP;
-    
-        ------------------------------------------------------------------
-        -- Procesar todos los registros NEW
-        ------------------------------------------------------------------
-        FOR r IN (
-            SELECT a.ROWID rid,
-                   a.SZRPEBP_PIDM pidm,
-                   NULL mname,
-                   b.SPRIDEN_FIRST_NAME fname, 
-                   b.SPRIDEN_LAST_NAME lname,
-                   c.GOREMAL_EMAIL_ADDRESS email,
-                   SPRIDEN_id,
-                   
-                   DECODE(SZRPEBP_ROL,'AS', TO_NUMBER(v_role_id_as), 'ON', TO_NUMBER(v_role_id_on) ) rol_doc,--TO_NUMBER(v_role_id_on) rol_doc,
-                   
-                   c.GOREMAL_EMAL_CODE emal_code,
-                   c.GOREMAL_PREFERRED_IND pref_ind,
-                   a.SZRPEBP_TERM_CODE term_code
-              FROM SZRPEBP a
-              INNER JOIN SPRIDEN b ON a.SZRPEBP_PIDM = b.SPRIDEN_PIDM
-              INNER JOIN GOREMAL c ON c.GOREMAL_PIDM = b.SPRIDEN_PIDM AND c.GOREMAL_EMAL_CODE = 'CEIN' AND GOREMAL_PREFERRED_IND = 'Y'
-              WHERE b.SPRIDEN_CHANGE_IND IS NULL AND a.SZRPEBP_STATE = 'NEW'
-        )
-        LOOP
-          BEGIN
-                ------------------------------------------------------------------
-                -- Generar JSON
-                ------------------------------------------------------------------
-
-           v_seq := INTEGRACION.SEQ_ITZBGSP.NEXTVAL;
-        
-       SELECT JSON_ARRAY(
-         JSON_OBJECT(
-             'request' VALUE JSON_OBJECT(
-                 'id' VALUE v_seq,
-                 'endpoint' VALUE v_url || v_path,
-                 'method' VALUE v_method,
-                 'body' VALUE JSON_OBJECT(
-                     'OrgDefinedId'      VALUE TO_CHAR(r.pidm),
-                     'FirstName'         VALUE r.fname,
-                     'MiddleName'        VALUE r.mname,
-                     'LastName'          VALUE r.lname,
-                     'ExternalEmail'     VALUE r.email,
-                     'UserName'          VALUE r.email,
-                     'RoleId'            VALUE r.rol_doc,
-                     'IsActive'          VALUE 'true'  FORMAT JSON,
-                     'SendCreationEmail' VALUE 'false' FORMAT JSON
-                 )
-             ),
-             'response' VALUE NULL
-             RETURNING CLOB
-         )
-         RETURNING CLOB
-       )
-    INTO l_json
-    FROM dual;
-            
-
-    dbms_output.put_line('mensaje 3');
-                ------------------------------------------------------------------
-                -- Registrar solicitud
-                ------------------------------------------------------------------
-    -- Se valida si el docente ya tiene INFORMACION ADICIONAL
-    
-      SELECT COUNT(1) 
-      INTO v_existe_inf_ad 
-      FROM  GORADID
-      WHERE GORADID_PIDM = r.pidm
-        AND GORADID_ADID_CODE= 'LMBO'; -- Inf adicional de docente online
-        
+      -- antes de insertar en tabla intermedia, valida si tiene email CEIN preferido 
+      IF PKG_INT_BRIPACE_PERS.f_existe_email(r.SFRSTCR_PIDM) = 'Y' THEN
       
-      -- Si el docente existe (Dato LMBO) no se debe crear
-          IF v_existe_inf_ad = 0 THEN
-                INSERT INTO integracion.itzbgsp (
-                    id,
-                    business_line,
-                    request,
-                    response,
-                    create_date,
-                    request_date,
-                    response_date,
-                    op_type,
-                    status
-                )
-                VALUES (
-                    v_seq,
-                    'ONLINE',
-                    l_json,
-                    NULL,
-                    SYSDATE,
-                    SYSDATE,
-                    NULL,
-                    'CREATE_USER',
-                    'PENDING'
-                );
-                ------------------------------------------------------------------
-                -- Actualizar estado en SZRTMBP
-                ------------------------------------------------------------------
-                UPDATE SZRPEBP
-                   SET SZRPEBP_STATE = 'SEND',
-                       SZRPEBP_ID_MAESTRO= v_seq
-                 WHERE ROWID = r.rid;
-                 
-                IF SQL%ROWCOUNT = 1 THEN   
-                  v_error_message:= 'DOCENTE '||r.spriden_id||' creado correctamente';
-             
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => 'CREATE_USER',
-                        p_term_code     => r.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn           => NULL,
-                        p_pidm          => r.pidm,
-                        p_state           => 'OK',
-                        p_error_code    => 'OK',
-                        p_error_message => v_error_message);
-                END IF;  
-                 
-           END IF;
-       
-            EXCEPTION
-                WHEN OTHERS THEN
-                   v_error := sqlerrm;
-
-                    UPDATE SZRPEBP
-                       SET SZRPEBP_STATE = 'FAIL',
-                        SZRPEBP_STATE_DET = v_error
-                     WHERE ROWID = r.rid;
-
-          END;
-        END LOOP;
+        INSERT INTO SZRSTBP (
+            SZRSTBP_PIDM,
+            SZRSTBP_TERM_CODE,
+            SZRSTBP_LINE_NEG,
+            SZRSTBP_ROL_ID,
+            SZRSTBP_USER_ID_BS,
+            SZRSTBP_STATE,
+            SZRSTBP_STATE_DET,
+            SZRSTBP_OPERACION,
+            SZRSTBP_ID_MAESTRO,
+            SZRSTBP_VERSION,
+            SZRSTBP_DATA_ORIGIN,
+            SZRSTBP_USER_ID
+        )
+        VALUES (
+            r.SFRSTCR_PIDM,
+            r.SFRSTCR_TERM_CODE,
+            'ON',
+            110,
+            NULL,
+            'NEW',
+            NULL,
+            'I',
+            NULL,
+            1,
+            'SFRSTCR',
+            USER
+        );
+      ELSE
+      --LOG controlado para que no duplique 
+        PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
+            p_business_line => 'ONLINE',
+            p_op_type       => 'CREATE_USER_ST',
+            p_term_code     => r.SFRSTCR_TERM_CODE,
+            p_pidm          => r.SFRSTCR_PIDM,
+            p_error_code    => 'EMAIL_NOT_FOUND',
+            p_error_message =>
+                'El estudiante no tiene un correo CEIN marcado como preferido ' ||
+                '(GOREMAL_PREFERRED_IND = Y).'
+        );
         
- -- Procesa los registros que se van a activar/ inactivar que vienen de la tabla intermedia
+      END IF;
+    END LOOP;
+
+END p_registra_alumnos;
+
+
+PROCEDURE p_registra_alumnos_int IS
+
+    ------------------------------------------------------------------
+    -- Variables
+    ------------------------------------------------------------------
+    v_url             VARCHAR2(1000);
+    v_path            VARCHAR2(500);
+    v_method          VARCHAR2(20);
+    v_seq             NUMBER;
+    v_error           VARCHAR2(4000);
+    v_error_message   VARCHAR2(4000);
+    l_body            CLOB;
+    v_tipo_user        VARCHAR2(15):= 'CREATE_USER_ST';
+    
+
+    ------------------------------------------------------------------
+    -- Cursor: alumnos pendientes de integración
+    -- Que tengan correo CEIN, Con informac adicional de brigspace en intermedia 
+    ------------------------------------------------------------------
+    CURSOR c_alumnos IS
+        SELECT
+            a.ROWID AS rid,
+            a.SZRSTBP_PIDM AS pidm,
+            a.SZRSTBP_TERM_CODE AS term_code,
+            a.SZRSTBP_ROL_ID AS rol_id,
+            b.SPRIDEN_ID AS spriden_id,
+            b.SPRIDEN_FIRST_NAME AS fname,
+            b.SPRIDEN_MI AS mname,
+            b.SPRIDEN_LAST_NAME AS lname,
+            c.GOREMAL_EMAIL_ADDRESS AS email
+        FROM SZRSTBP a
+        INNER JOIN SPRIDEN b
+            ON a.SZRSTBP_PIDM = b.SPRIDEN_PIDM
+        INNER JOIN GOREMAL c
+            ON c.GOREMAL_PIDM = b.SPRIDEN_PIDM
+           AND c.GOREMAL_EMAL_CODE = 'CEIN'
+           AND c.GOREMAL_PREFERRED_IND = 'Y'
+        WHERE b.SPRIDEN_CHANGE_IND IS NULL
+          AND a.SZRSTBP_STATE = 'NEW'
+          AND PKG_INT_BRIPACE_PERS.F_EXISTE_INF_AD(
+                  a.SZRSTBP_PIDM
+              ) = 'N';
+
+BEGIN
+
+    ------------------------------------------------------------------
+    -- Obtener configuración del endpoint
+    ------------------------------------------------------------------
+    -- Inicializar v_url, v_path y v_method con la configuración
+    -- existente para la operación CREA_USER de ONLINE.
+    -- Mantener aquí el mismo bloque de configuración utilizado
+    -- por los demás procedimientos del paquete.
+    
+     PKG_INT_BRIPACE_UTIL.p_obtener_config_api(
+        p_operacion => 'CREA_USER', -- funciona para docente y alumno
+        p_url       => v_url,
+        p_method    => v_method,
+        p_path      => v_path
+    );
+
+    FOR r IN c_alumnos LOOP
+
         BEGIN
-           SELECT IZTZCFG_REQUEST_URL, IZTZCFG_REQUEST_METHOD
-             INTO v_url, v_method
-          from desarrollo.IZTZCFG
-          WHERE IZTZCFG_IZTID = 'ONL_ACTIVE_USER';
-        EXCEPTION
-         WHEN NO_DATA_FOUND THEN
-           v_url    := NULL;
-           v_method := NULL;
-        END; 
-  
-        IF v_url IS NOT NULL   AND v_method IS NOT NULL THEN
-          v_seq:= null;
-        
-           dbms_output.put_line('mensaje URL: '||v_url||' '||v_method);
-           
-            FOR i in (
-             select a.ROWID rid,
-                    INTEGRACION.SEQ_ITZBGSP.NEXTVAL v_seq,
-                    SZRPEBP_ID_MAESTRO id_maestro, 
-                    b.GORADID_ADDITIONAL_ID id_usuario_brightspace,
-                    SZRPEBP_STATE,
-                    SZRPEBP_PIDM pidm,
-                    SPRIDEN_ID,
-                    SZRPEBP_TERM_CODE term_code,
-                    CASE 
-                      WHEN SZRPEBP_STATE = 'AC' THEN 'ACTIVE_USER'
-                      ELSE 'INACTIVE_USER' END action_user,
-                    CASE 
-                      WHEN SZRPEBP_STATE = 'AC' THEN 'activó'
-                      ELSE 'inactivó' END action_label_user
-                     from SZRPEBP a, GORADID b, SPRIDEN C
-                    where a.SZRPEBP_PIDM = b.GORADID_PIDM
-                      and a.SZRPEBP_PIDM = c.SPRIDEN_PIDM
-                      and b.GORADID_ADID_CODE = 'LMBO'
-                      and a.SZRPEBP_STATE IN ('AC', 'IN')
-                      and SPRIDEN_CHANGE_IND is null
-            ) 
-            LOOP
-              BEGIN
-                SELECT JSON_ARRAY( JSON_OBJECT(
-                 'request' VALUE JSON_OBJECT(
-                 'id' VALUE i.v_seq,
-                 'endpoint' VALUE REPLACE( v_url, '{ID_USUARIO_BRIGHTSPACE}',TO_CHAR(i.id_usuario_brightspace) ),
-                 'method' VALUE v_method,
-                 'body' VALUE JSON_OBJECT(
-                     'IsActive' VALUE
-                         CASE
-                             WHEN i.SZRPEBP_STATE = 'AC'
-                             THEN 'true'
-                             ELSE 'false'
-                         END FORMAT JSON )),
-                'response' VALUE NULL    RETURNING CLOB ) RETURNING CLOB )
-                INTO l_json
-                FROM dual;
-                
-                -- Se inserta en la tabla de integracion
-                
-                
-           dbms_output.put_line('mensaje VA A INSERTAR itzbgsp. id_maestro'||i.id_maestro);
-           
-                BEGIN
-                 INSERT INTO integracion.itzbgsp (
-                    id,
-                    business_line,
-                    request,
-                    response,
-                    create_date,
-                    request_date,
-                    response_date,
-                    op_type,
-                    status
-                )
-                VALUES (
-                    i.v_seq,
-                    'ONLINE',
-                    l_json,
-                    NULL,
-                    SYSDATE,
-                    SYSDATE,
-                    NULL,
-                    i.action_user,
-                    'PENDING'
+
+            ------------------------------------------------------------------
+            -- Generar JSON del alumno
+            ------------------------------------------------------------------
+            SELECT JSON_OBJECT(
+                       'OrgDefinedId'      VALUE TO_CHAR(r.pidm),
+                       'FirstName'         VALUE r.fname,
+                       'MiddleName'        VALUE r.mname,
+                       'LastName'          VALUE r.lname,
+                       'ExternalEmail'     VALUE r.email,
+                       'UserName'          VALUE r.email,
+                       'RoleId'            VALUE r.rol_id,
+                       'IsActive'          VALUE 'true' FORMAT JSON,
+                       'SendCreationEmail' VALUE 'false' FORMAT JSON
+                       RETURNING CLOB
+                   )
+              INTO l_body
+              FROM dual;
+
+            ------------------------------------------------------------------
+            -- Generar registro en ITZBGSP
+            ------------------------------------------------------------------
+            PKG_INT_BRIPACE_UTIL.P_GENERA_INSERTA_ITZBGSP(
+                p_business_line => 'ONLINE',
+                p_op_type       => v_tipo_user,
+                p_endpoint      => v_url || v_path,
+                p_method        => v_method,
+                p_body          => l_body,
+                p_id_generado   => v_seq
+            );
+
+            ------------------------------------------------------------------
+            -- Actualizar estado de la intermedia
+            ------------------------------------------------------------------
+            UPDATE SZRSTBP
+               SET SZRSTBP_STATE      = 'SEND',
+                   SZRSTBP_ID_MAESTRO = v_seq
+             WHERE ROWID = r.rid
+               AND SZRSTBP_STATE = 'NEW';
+
+            ------------------------------------------------------------------
+            -- Registrar resultado correcto
+            ------------------------------------------------------------------
+            IF SQL%ROWCOUNT = 1 THEN
+
+                v_error_message :=
+                    'Alumno ' || r.spriden_id ||
+                    ' creado correctamente';
+
+                PKG_INT_BRIPACE_UTIL.P_REGISTRA_ERROR_LOG(
+                    p_business_line => 'ONLINE',
+                    p_op_type       => v_tipo_user,
+                    p_id_maestro    => v_seq,
+                    p_term_code     => r.term_code,
+                    p_ptrm_code     => NULL,
+                    p_data_origin   => 'SFRSTCR',
+                    p_crn           => NULL,
+                    p_pidm          => r.pidm,
+                    p_state         => 'OK',
+                    p_error_code    => 'OK',
+                    p_error_message => v_error_message
                 );
-                EXCEPTION WHEN OTHERS THEN
-                  v_error_message:=sqlerrm;
-                
-                  dbms_output.put_line('error: '||sqlerrm);
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => i.action_user,
-                        p_term_code     => i.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn            => NULL,
-                        p_pidm          => i.pidm,
-                        p_state         => 'ERROR',
-                        p_error_code    => SQLCODE,
-                        p_error_message => v_error_message
-                    );
 
-                    ------------------------------------------------------------------
-                    -- NO CONTINUAR CON ESTE DOCENTE
-                    ------------------------------------------------------------------
-                    CONTINUE;
-                  
-                END;
+            END IF;
+
+        EXCEPTION
+            WHEN OTHERS THEN
+
+                v_error := SQLERRM;
+
                 ------------------------------------------------------------------
-                -- Actualizar estado en SZRTMBP
+                -- Marcar registro como FAIL
                 ------------------------------------------------------------------
-                UPDATE SZRPEBP
-                   SET SZRPEBP_STATE = 'SEND',
-                       SZRPEBP_ID_MAESTRO= i.id_maestro
-                 WHERE ROWID = i.rid;
-                 
-                 v_error_message:= 'El docente '||i.SPRIDEN_ID||' se '||i.action_label_user|| ' correctamente';
-             
-                   PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => i.action_user,
-                        p_term_code     => i.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn           => NULL,
-                        p_pidm          => i.pidm,
-                        p_state           => 'OK',
-                        p_error_code    => 'OK',
-                        p_error_message => v_error_message);
+                UPDATE SZRSTBP
+                   SET SZRSTBP_STATE     = 'FAIL',
+                       SZRSTBP_STATE_DET = v_error
+                 WHERE ROWID = r.rid;
 
-               EXCEPTION WHEN OTHERS THEN
-                  v_error_message:=sqlerrm;
-                
-                  dbms_output.put_line('error 2: '||sqlerrm);
-                  
-                  PKG_INT_BRIPACE_TERM.p_registra_error_log(
-                        p_business_line => 'ONLINE',
-                        p_op_type       => i.action_user,
-                        p_term_code     => i.term_code,
-                        p_ptrm_code     => NULL,
-                        p_crn           => NULL,
-                        p_pidm          => i.pidm,
-                        p_state           => 'OK',
-                        p_error_code    => 'OK',
-                        p_error_message => v_error_message);
-              
-              END;
-           
-            END LOOP;
-        END IF;
+                ------------------------------------------------------------------
+                -- Registrar error
+                ------------------------------------------------------------------
+                PKG_INT_BRIPACE_UTIL.P_REGISTRA_ERROR_LOG(
+                    p_business_line => 'ONLINE',
+                    p_op_type       => v_tipo_user,
+                    p_id_maestro    => v_seq,
+                    p_term_code     => r.term_code,
+                    p_ptrm_code     => NULL,
+                    p_data_origin   => 'SFRSTCR',
+                    p_crn           => NULL,
+                    p_pidm          => r.pidm,
+                    p_state         => 'ERROR_CREATE_USER',
+                    p_error_code    => SQLCODE,
+                    p_error_message => v_error
+                );
 
-    END p_registra_persona_int_OLD;
+        END;
+
+    END LOOP;
+
+END p_registra_alumnos_int;
+
+---
+-- valida si existe dato adicional en persona
+FUNCTION f_existe_inf_ad (
+    p_pidm IN goradid.goradid_pidm%TYPE
+) RETURN VARCHAR2
+IS
+    v_existe NUMBER;
+BEGIN
+    SELECT COUNT(1)
+    INTO v_existe
+    FROM goradid
+    WHERE goradid_pidm = p_pidm
+      AND goradid_adid_code = 'LMBO';
+
+    RETURN CASE
+               WHEN v_existe > 0 THEN 'Y'
+               ELSE 'N'
+           END;
+END f_existe_inf_ad;
+
+FUNCTION f_get_inf_ad (
+    p_pidm IN GORADID.GORADID_PIDM%TYPE
+) RETURN GORADID.GORADID_ADDITIONAL_ID%TYPE
+IS
+    v_adic_id GORADID.GORADID_ADDITIONAL_ID%TYPE;
+BEGIN
+
+    SELECT GORADID_ADDITIONAL_ID
+      INTO v_adic_id
+      FROM GORADID
+     WHERE GORADID_PIDM = p_pidm
+       AND GORADID_ADID_CODE = 'LMBO';
+
+    RETURN v_adic_id;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN NULL;
+END f_get_inf_ad;
+
+-- valida si existe dato adicional en persona
+FUNCTION f_existe_email (
+    p_pidm IN number
+) RETURN VARCHAR2
+IS
+    v_existe NUMBER;
+BEGIN
+     SELECT COUNT(*) INTO v_existe
+                  FROM GOREMAL g
+                 WHERE g.GOREMAL_PIDM = p_pidm
+                   AND g.GOREMAL_EMAL_CODE = 'CEIN'
+                   AND g.GOREMAL_PREFERRED_IND = 'Y';
+
+    RETURN CASE
+               WHEN v_existe > 0 THEN 'Y'
+               ELSE 'N'
+           END;
+END f_existe_email;
+
+
+PROCEDURE p_inactive_user_alu
+-- Query inactivar general
+-- var gtvsdax cod de retenciones
+-- la retencion fecha ini <= sysdate y fecha fin >= sysdate
+-- debe tener ID datos adicionales GORADIT
+-- debe tener un registro de CREATE_USER
+-- que no tenga inactive user en su ultimo registro entre inactive/active_user
+
+--** PROCESO INACTIVE_USER: Proceso para inactivar usuario si tiene RETENCION
+-- selecciona las personas en mora, tabla  sprhold donde la fecha inicial--> SPRHOLD_FROM_DATE sea menor o igual al SYSDATE
+--  y fecha final--> SPRHOLD_TO_DATE >= SYSDATE. Que ademas tenga un registro de ITZBGSP.OP_TYPE=CREATE_USER_ST con ITZBGSP.STATUS= PROCESSED_OK y que NO tenga en su ultimo
+-- registro ITZBGSP.OP_TYPE=INACTIVE_USER (de la lista de INACTIVE_USER, ACTIVE_USER, CREATE_USER_ST) (Para no volverlo a inactivar); si está INACTIVE_USER no lo debe volver a inactivar, pero
+-- si está ACTIVE_USER ó CREATE_USER_ST en su última operación, si lo debe de inactivar.
+
+-- tambien debe tener datos adicionales:  PKG_INT_BRIPACE_PERS.F_EXISTE_INF_AD(PIDM ) = 'S'
+--Cuando tenga esta poblacion va a llamar a este procedure que genera el JSON en la tabla de integracion: PKG_INT_BRIPACE_UTIL.p_genera_inserta_itzbgsp
+IS
+    ------------------------------------------------------------------
+    -- Configuración
+    ------------------------------------------------------------------
+    V_URL_CFG       DESARROLLO.IZTZCFG.IZTZCFG_REQUEST_URL%TYPE;
+    V_METHOD        DESARROLLO.IZTZCFG.IZTZCFG_REQUEST_METHOD%TYPE;
+
+    ------------------------------------------------------------------
+    -- Datos del usuario
+    ------------------------------------------------------------------
+    V_ADDIC_ID      VARCHAR2(100);
+    V_BODY          CLOB;
+    V_SEQ           NUMBER;
+
+BEGIN
+  DBMS_OUTPUT.PUT_LINE('INICIO: ');
+    ------------------------------------------------------------------
+    -- 1. Obtener configuración para inactivar usuario
+    ------------------------------------------------------------------
+    BEGIN
+        SELECT IZTZCFG_REQUEST_URL,
+               IZTZCFG_REQUEST_METHOD
+          INTO V_URL_CFG,
+               V_METHOD
+          FROM DESARROLLO.IZTZCFG
+         WHERE IZTZCFG_IZTID = 'ONL_ACTIVE_USER';
+
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            V_URL_CFG := NULL;
+            V_METHOD  := NULL;
+    END;
+
+DBMS_OUTPUT.PUT_LINE('V_URL_CFG: '||V_URL_CFG);
+    ------------------------------------------------------------------
+    -- Validar configuración
+    ------------------------------------------------------------------
+    IF V_URL_CFG IS NULL OR V_METHOD IS NULL THEN
+        RAISE_APPLICATION_ERROR(
+            -20001,
+            'No existe configuración ONL_ACTIVE_USER en IZTZCFG'
+        );
+    END IF;
+
+DBMS_OUTPUT.PUT_LINE('V_METHOD: '||V_METHOD);
+
+    ------------------------------------------------------------------
+    -- 2. Construir BODY para inactivar usuario
+    ------------------------------------------------------------------
+    SELECT JSON_OBJECT(
+               'IsActive' VALUE 'false' FORMAT JSON
+               RETURNING CLOB
+           )
+      INTO V_BODY
+      FROM DUAL;
+
+DBMS_OUTPUT.PUT_LINE('V_BODY: '||V_BODY);
+    ------------------------------------------------------------------
+    -- 3. Obtener población de usuarios que deben inactivarse
+    ------------------------------------------------------------------
+    FOR I IN (
+        WITH ULTIMA_OPERACION AS (
+            SELECT ID,
+                   PIDM,
+                   OP_TYPE,
+                   STATUS,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY PIDM
+                       ORDER BY ID DESC
+                   ) AS RN
+              FROM ITZBGSP
+             WHERE OP_TYPE IN (
+                       'INACTIVE_USER',
+                       'ACTIVE_USER',
+                       'CREATE_USER_ST'
+                   )
+        ),
+        -- valor de la variable gtvsdax de los codigos para retenciones
+        PARAMETRO AS (
+            SELECT DBMS_LOB.SUBSTR(
+                       INTEGRACION.PKG_INT_BRIPACE_TERM.F_GET_GTVSDAX(
+                           'ONLINE',
+                           'INACTIVAR',
+                           'DEV_INT_BRIGTHSPACE'
+               ),
+               4000,
+               1
+           ) AS VALORES
+        FROM DUAL
+            ),
+            -- pone los codigos para que se comporten como columnas y usarlos en un IN
+            CODIGOS AS (
+                SELECT TRIM(REGEXP_SUBSTR(VALORES, '[^,]+', 1, LEVEL)) AS CODIGO
+                  FROM PARAMETRO
+                CONNECT BY LEVEL <= REGEXP_COUNT(VALORES, ',') + 1
+            )
+        SELECT DISTINCT
+               S.SPRIDEN_PIDM AS PIDM,
+               S.SPRIDEN_ID   AS SPRIDEN_ID,
+               PKG_INT_BRIPACE_PERS.F_GET_INF_AD(
+                   S.SPRIDEN_PIDM
+               ) AS ID_USUARIO_BRIGHTSPACE,
+               U.OP_TYPE AS ULTIMA_OPERACION
+          FROM SPRIDEN S
+          JOIN ULTIMA_OPERACION U
+            ON U.PIDM = S.SPRIDEN_PIDM
+           AND U.RN = 1
+         WHERE S.SPRIDEN_CHANGE_IND IS NULL
+          -- AND  S.SPRIDEN_PIDM = 1159662 --OJO ES PARA LA PRUEBA
+
+           -----------------------------------------------------------
+           -- Tener retención vigente
+           -----------------------------------------------------------
+           AND EXISTS (
+                   SELECT 1
+                     FROM SPRHOLD H
+                    WHERE H.SPRHOLD_PIDM = S.SPRIDEN_PIDM
+                      AND H.SPRHOLD_FROM_DATE <= SYSDATE
+                      AND H.SPRHOLD_TO_DATE > SYSDATE
+                      AND H.SPRHOLD_HLDD_CODE IN ( SELECT CODIGO FROM CODIGOS)
+                     UNION
+                     SELECT 1
+                        FROM SORLCUR U, SGRSTHD D
+                        where SORLCUR_PIDM = SGRSTHD_PIDM
+                          AND SGRSTHD_PIDM = S.SPRIDEN_PIDM
+                          AND SORLCUR_LMOD_CODE='LEARNER'
+                          AND SORLCUR_CACT_CODE='ACTIVE'
+                          AND SORLCUR_TERM_CODE_END is null
+                          AND SORLCUR_CURRENT_CDE='Y'
+                          AND SORLCUR_LEVL_CODE ='ON'
+                          AND SGRSTHD_FROM_DATE <= SYSDATE
+                          AND SGRSTHD_TO_DATE > SYSDATE
+               )
+
+           -----------------------------------------------------------
+           -- Tener información adicional
+           -----------------------------------------------------------
+           AND PKG_INT_BRIPACE_PERS.F_EXISTE_INF_AD(
+                   S.SPRIDEN_PIDM
+               ) = 'Y'
+
+           -----------------------------------------------------------
+           -- Tener usuario creado correctamente en Brightspace
+           -----------------------------------------------------------
+           AND EXISTS (
+                   SELECT 1
+                     FROM ITZBGSP C
+                    WHERE C.PIDM = S.SPRIDEN_PIDM
+                      AND C.OP_TYPE = 'CREATE_USER_ST'
+                      AND C.STATUS = 'PROCESSED_OK'
+               )
+
+           -----------------------------------------------------------
+           -- No volver a inactivar si su última operación
+           -- ya fue INACTIVE_USER
+           -----------------------------------------------------------
+           AND U.OP_TYPE <> 'INACTIVE_USER'
+
+           -----------------------------------------------------------
+           -- Solo inactivar si la última operación fue una
+           -- activación o creación de usuario
+           -----------------------------------------------------------
+           AND U.OP_TYPE IN (
+                   'ACTIVE_USER',
+                   'CREATE_USER_ST'
+               )
+    )
+    LOOP
+      begin
+      
+      
+DBMS_OUTPUT.PUT_LINE('INICIA EL FOR: '||I.PIDM);
+
+        --------------------------------------------------------------
+        -- 4. Obtener identificador de usuario en Brightspace
+        --------------------------------------------------------------
+        V_ADDIC_ID := I.ID_USUARIO_BRIGHTSPACE;
+
+DBMS_OUTPUT.PUT_LINE('PROCESANDO A: '||I.PIDM);
+
+        --------------------------------------------------------------
+        -- 5. Generar solicitud INACTIVE_USER
+        --------------------------------------------------------------
+        PKG_INT_BRIPACE_UTIL.P_GENERA_INSERTA_ITZBGSP(
+            P_BUSINESS_LINE => 'ONLINE',
+            P_OP_TYPE       => 'INACTIVE_USER',
+
+            P_ENDPOINT      =>
+                REPLACE(
+                    V_URL_CFG,
+                    '{ID_USUARIO_BRIGHTSPACE}',
+                    TO_CHAR(V_ADDIC_ID)
+                ),
+
+            P_METHOD        => V_METHOD,
+            P_BODY          => V_BODY,
+            P_ID_GENERADO   => V_SEQ,
+            P_PIDM          => I.PIDM,
+            P_ID_SPRIDEN    => I.SPRIDEN_ID
+        );
+  COMMIT;
+    EXCEPTION
+        WHEN OTHERS THEN
+        
+        
+DBMS_OUTPUT.PUT_LINE('ERROR: '||I.PIDM);
+
+           PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
+                p_business_line => 'ONLINE',
+                p_op_type       => 'CREATE_USER_ST',
+                p_term_code     => null,
+                p_pidm          => i.PIDM,
+                p_error_code    => 'ERR_USER_ST',
+                p_error_message =>
+                    'Error en el proceso de inactivacion del estudiante'
+            );
+      end;
+    END LOOP;
+
+END p_inactive_user_alu;
+
+
+PROCEDURE P_PROCESA_ESTADO_ALU (
+    P_OP_TYPE   IN VARCHAR2,
+    P_IS_ACTIVE IN VARCHAR2
+)
+-- Query inactivar 
+-- var gtvsdax cod de retenciones
+-- la retencion fecha ini <= sysdate y fecha fin >= sysdate
+-- debe tener ID datos adicionales GORADIT
+-- debe tener un registro de CREATE_USER
+-- que no tenga inactive user en su ultimo registro entre inactive/active_user
+
+--** PROCESO INACTIVE_USER: Proceso para inactivar usuario si tiene RETENCION
+-- selecciona las personas en mora, tabla  sprhold donde la fecha inicial--> SPRHOLD_FROM_DATE sea menor o igual al SYSDATE
+--  y fecha final--> SPRHOLD_TO_DATE >= SYSDATE. Que ademas tenga un registro de ITZBGSP.OP_TYPE=CREATE_USER_ST con ITZBGSP.STATUS= PROCESSED_OK y que NO tenga en su ultimo
+-- registro ITZBGSP.OP_TYPE=INACTIVE_USER (de la lista de INACTIVE_USER, ACTIVE_USER, CREATE_USER_ST) (Para no volverlo a inactivar); si está INACTIVE_USER no lo debe volver a inactivar, pero
+-- si está ACTIVE_USER ó CREATE_USER_ST en su última operación, si lo debe de inactivar.
+
+-- tambien debe tener datos adicionales:  PKG_INT_BRIPACE_PERS.F_EXISTE_INF_AD(PIDM ) = 'S'
+--Cuando tenga esta poblacion va a llamar a este procedure que genera el JSON en la tabla de integracion: PKG_INT_BRIPACE_UTIL.p_genera_inserta_itzbgsp
+--** PROCESO ACTIVE_USER: igual que el anterior pero la SPRHOLD_TO_DATE < SYSDATE y el ultimo evento del usuario sea INACTIVE_USER
+
+IS
+    V_URL_CFG       DESARROLLO.IZTZCFG.IZTZCFG_REQUEST_URL%TYPE;
+    V_METHOD        DESARROLLO.IZTZCFG.IZTZCFG_REQUEST_METHOD%TYPE;
+    V_ADDIC_ID      VARCHAR2(100);
+    V_BODY          CLOB;
+    V_SEQ           NUMBER;
+BEGIN
+
+    ------------------------------------------------------------
+    -- 1. Obtener configuración
+    ------------------------------------------------------------
+    SELECT IZTZCFG_REQUEST_URL,
+           IZTZCFG_REQUEST_METHOD
+      INTO V_URL_CFG,
+           V_METHOD
+      FROM DESARROLLO.IZTZCFG
+     WHERE IZTZCFG_IZTID = 'ONL_ACTIVE_USER';
+
+    ------------------------------------------------------------
+    -- 2. Construir BODY según la operación
+    ------------------------------------------------------------
+    SELECT JSON_OBJECT(
+               'IsActive' VALUE P_IS_ACTIVE FORMAT JSON
+               RETURNING CLOB
+           )
+      INTO V_BODY
+      FROM DUAL;
+
+    ------------------------------------------------------------
+    -- 3. Obtener población que debe procesarse
+    ------------------------------------------------------------
+    FOR I IN (
+        WITH ULTIMA_OPERACION AS (
+            SELECT ID,
+                   PIDM,
+                   OP_TYPE,
+                   STATUS,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY PIDM
+                       ORDER BY ID DESC
+                   ) AS RN
+              FROM ITZBGSP
+             WHERE OP_TYPE IN (
+                       'INACTIVE_USER',
+                       'ACTIVE_USER',
+                       'CREATE_USER_ST'
+                   )
+        )
+        SELECT DISTINCT
+               S.SPRIDEN_PIDM AS PIDM,
+               S.SPRIDEN_ID AS SPRIDEN_ID,
+               PKG_INT_BRIPACE_PERS.F_GET_INF_AD(
+                   S.SPRIDEN_PIDM
+               ) AS ID_USUARIO_BRIGHTSPACE,
+               U.OP_TYPE AS ULTIMA_OPERACION
+          FROM SPRIDEN S
+          JOIN ULTIMA_OPERACION U
+            ON U.PIDM = S.SPRIDEN_PIDM
+           AND U.RN = 1
+         WHERE S.SPRIDEN_CHANGE_IND IS NULL
+
+           -------------------------------------------------------
+           -- Tener datos adicionales
+           -------------------------------------------------------
+           AND PKG_INT_BRIPACE_PERS.F_EXISTE_INF_AD(
+                   S.SPRIDEN_PIDM
+               ) = 'Y'
+
+           -------------------------------------------------------
+           -- Tener usuario creado correctamente
+           -------------------------------------------------------
+           AND EXISTS (
+                   SELECT 1
+                     FROM ITZBGSP C
+                    WHERE C.PIDM = S.SPRIDEN_PIDM
+                      AND C.OP_TYPE = 'CREATE_USER_ST'
+                      AND C.STATUS = 'PROCESSED_OK'
+               )
+
+           -------------------------------------------------------
+           -- Condiciones según la operación
+           -------------------------------------------------------
+         AND (
+                (-- PARA INACTIVAR, su retencion debe estar activa Y
+                    P_OP_TYPE = 'INACTIVE_USER'
+                    AND U.OP_TYPE IN ('ACTIVE_USER', 'CREATE_USER_ST')
+                    AND F_VALIDA_RETENCION(
+                            S.SPRIDEN_PIDM,
+                            P_OP_TYPE
+                        ) = 'Y'
+                )
+                OR
+                (-- PARA ACTIVAR, su  retencion esta vencida Y
+                    P_OP_TYPE = 'ACTIVE_USER'
+                    AND U.OP_TYPE = 'INACTIVE_USER'
+                    AND F_VALIDA_RETENCION(
+                            S.SPRIDEN_PIDM,
+                            P_OP_TYPE
+                        ) = 'Y'
+                )
+            )
+    )
+    LOOP
+
+        ------------------------------------------------------------
+        -- 4. Obtener identificador de Brightspace
+        ------------------------------------------------------------
+        V_ADDIC_ID := I.ID_USUARIO_BRIGHTSPACE;
+
+        ------------------------------------------------------------
+        -- 5. Generar solicitud de activación / inactivación
+        ------------------------------------------------------------
+        PKG_INT_BRIPACE_UTIL.P_GENERA_INSERTA_ITZBGSP(
+            P_BUSINESS_LINE => 'ONLINE',
+            P_OP_TYPE       => P_OP_TYPE,
+
+            P_ENDPOINT      =>
+                REPLACE(
+                    V_URL_CFG,
+                    '{ID_USUARIO_BRIGHTSPACE}',
+                    TO_CHAR(V_ADDIC_ID)
+                ),
+
+            P_METHOD        => V_METHOD,
+            P_BODY          => V_BODY,
+            P_ID_GENERADO   => V_SEQ,
+            P_PIDM          => I.PIDM,
+            P_ID_SPRIDEN    => I.SPRIDEN_ID
+        );
+
+    END LOOP;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+
+END P_PROCESA_ESTADO_ALU;
+
+
+FUNCTION F_VALIDA_RETENCION (
+    P_PIDM     IN NUMBER,
+    P_OP_TYPE  IN VARCHAR2
+) RETURN VARCHAR2
+IS
+    V_RESULTADO VARCHAR2(1);
+BEGIN
+
+    IF P_OP_TYPE NOT IN ('INACTIVE_USER', 'ACTIVE_USER') THEN
+        RETURN 'N';
+    END IF;
+-- valor de la variable gtvsdax de los codigos para retenciones
+    WITH PARAMETRO AS (
+        SELECT DBMS_LOB.SUBSTR(
+                   INTEGRACION.PKG_INT_BRIPACE_TERM.F_GET_GTVSDAX(
+                       'ONLINE',
+                       'INACTIVAR',
+                       'DEV_INT_BRIGTHSPACE'
+                   ),
+                   4000,
+                   1
+               ) AS VALORES
+          FROM DUAL
+    ),
+    -- pone los codigos para que se comporten como columnas y usarlos en un IN
+    CODIGOS AS (
+        SELECT TRIM(
+                   REGEXP_SUBSTR(VALORES, '[^,]+', 1, LEVEL)
+               ) AS CODIGO
+          FROM PARAMETRO
+        CONNECT BY LEVEL <= REGEXP_COUNT(VALORES, ',') + 1
+    )
+    SELECT CASE
+        ------------------------------------------------------------
+        -- INACTIVAR: existe retención vigente
+        ------------------------------------------------------------
+        WHEN P_OP_TYPE = 'INACTIVE_USER'
+         AND (
+                EXISTS (
+                    SELECT 1
+                      FROM SPRHOLD H
+                     WHERE H.SPRHOLD_PIDM = P_PIDM
+                       AND H.SPRHOLD_FROM_DATE <= SYSDATE
+                       AND H.SPRHOLD_TO_DATE > SYSDATE
+                       AND H.SPRHOLD_HLDD_CODE IN (
+                               SELECT CODIGO FROM CODIGOS
+                           )
+                )
+                OR
+                EXISTS (
+                    SELECT 1
+                      FROM SORLCUR U
+                      JOIN SGRSTHD D
+                        ON U.SORLCUR_PIDM = D.SGRSTHD_PIDM
+                     WHERE D.SGRSTHD_PIDM = P_PIDM
+                       AND U.SORLCUR_LMOD_CODE = 'LEARNER'
+                       AND U.SORLCUR_CACT_CODE = 'ACTIVE'
+                       AND U.SORLCUR_TERM_CODE_END IS NULL
+                       AND U.SORLCUR_CURRENT_CDE = 'Y'
+                       AND U.SORLCUR_LEVL_CODE = 'ON'
+                       AND D.SGRSTHD_FROM_DATE <= SYSDATE
+                       AND D.SGRSTHD_TO_DATE > SYSDATE
+                )
+             )
+        THEN 'Y'
+
+        ------------------------------------------------------------
+        -- ACTIVAR: existe retención vencida
+        ------------------------------------------------------------
+        WHEN P_OP_TYPE = 'ACTIVE_USER'
+         AND (
+                EXISTS (
+                    SELECT 1
+                      FROM SPRHOLD H
+                     WHERE H.SPRHOLD_PIDM = P_PIDM
+                       AND H.SPRHOLD_TO_DATE < SYSDATE
+                       AND H.SPRHOLD_HLDD_CODE IN (
+                               SELECT CODIGO FROM CODIGOS
+                           )
+                )
+                OR
+                EXISTS (
+                    SELECT 1
+                      FROM SORLCUR U
+                      JOIN SGRSTHD D
+                        ON U.SORLCUR_PIDM = D.SGRSTHD_PIDM
+                     WHERE D.SGRSTHD_PIDM = P_PIDM
+                       AND U.SORLCUR_LMOD_CODE = 'LEARNER'
+                       AND U.SORLCUR_CACT_CODE = 'ACTIVE'
+                       AND U.SORLCUR_TERM_CODE_END IS NULL
+                       AND U.SORLCUR_CURRENT_CDE = 'Y'
+                       AND U.SORLCUR_LEVL_CODE = 'ON'
+                       AND D.SGRSTHD_TO_DATE < SYSDATE
+                )
+             )
+        THEN 'Y'
+
+        ELSE 'N'
+    END
+    INTO V_RESULTADO
+    FROM DUAL;
+
+    RETURN V_RESULTADO;
+
+END F_VALIDA_RETENCION;
+
 
 END PKG_INT_BRIPACE_PERS;

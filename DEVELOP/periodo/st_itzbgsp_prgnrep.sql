@@ -1,4 +1,4 @@
-create or replace TRIGGER integracion.st_itzbgsp_prgnrep
+TRIGGER integracion.st_itzbgsp_prgnrep
 AFTER INSERT OR UPDATE OR DELETE
 ON integracion.itzbgsp
 FOR EACH ROW
@@ -15,7 +15,10 @@ BEGIN
          REQUEST_DATE,
          RESPONSE_DATE,
          OP_TYPE,
-         STATUS
+         STATUS,
+         PIDM,
+         ID_SPRIDEN
+         
       )
       VALUES
       (
@@ -27,7 +30,9 @@ BEGIN
          :NEW.REQUEST_DATE,
          :NEW.RESPONSE_DATE,
          :NEW.OP_TYPE,
-         :NEW.STATUS
+         :NEW.STATUS,
+         :NEW.PIDM,
+         :NEW.ID_SPRIDEN
       );
 
    ELSIF UPDATING THEN
@@ -40,7 +45,9 @@ BEGIN
              REQUEST_DATE  = :NEW.REQUEST_DATE,
              RESPONSE_DATE = :NEW.RESPONSE_DATE,
              OP_TYPE       = :NEW.OP_TYPE,
-             STATUS        = :NEW.STATUS
+             STATUS        = :NEW.STATUS,
+             PIDM          = :NEW.PIDM,
+             ID_SPRIDEN    = :NEW.ID_SPRIDEN
        WHERE ID = :NEW.ID;
 
    ELSIF DELETING THEN

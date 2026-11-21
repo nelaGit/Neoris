@@ -1,4 +1,4 @@
-create or replace PACKAGE                                                                                     PKG_INT_BRIPACE_NRC AS
+create or replace PACKAGE                                                                                                 PKG_INT_BRIPACE_NRC AS
 
 -- Registra en tabla intermedia SZRSSBP datos del NRC capturados desde el trigger de SSBSECT
     PROCEDURE p_registra_nrc(
@@ -17,7 +17,7 @@ create or replace PACKAGE                                                       
     PROCEDURE p_registra_nrc_int ;
     
     -- Inserta datos suplementarios en tabla intermedia ITZSUPL y real.
-    PROCEDURE p_insert_itzsupl;
+    PROCEDURE p_insert_itzsupl(p_id_maestro NUMBER);
 
     FUNCTION get_course_title (
         p_crn       IN SSBSECT.SSBSECT_CRN%TYPE,
@@ -26,9 +26,7 @@ create or replace PACKAGE                                                       
     RETURN VARCHAR2;
 
 END PKG_INT_BRIPACE_NRC;
-/
-
-create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
+create or replace PACKAGE BODY                                                    PKG_INT_BRIPACE_NRC AS
     
 
     PROCEDURE p_registra_nrc(
@@ -232,19 +230,12 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
         ELSE
         -- Con state INCOMPLETE le capturo la secuencia 
           v_seq := r.SZRSSBP_ID_MAESTRO;
-          -- MER TMP voy por aqui
           -- una vez capturada la v_seq del estado INCOMPLETE, generamos en el JSON el error para guardarlo
           -- hay que poner un MERGE en el insert de integracion.itzbgsp linea 409 para que no duplique cuando es estado incomplete
         END IF;   
            --obtenermos el titulo del crn
            v_crse_title:= PKG_INT_BRIPACE_NRC.get_course_title(r.szrssbp_crn,r.szrssbp_term_code );
            
-    -- Obtener datos suplementarios
-            /*   v_id_master_bs:= PKG_INT_BRIPACE_TERM.fn_get_gorsdav_value(
-                                'SCBCRSE', 'ID_MASTER_BS', 
-                                r.SZRSSBP_SUBJ_CODE||CHR(1)||r.SZRSSBP_CRSE_NUMB||CHR(1)||r.SZRSSBP_TERM_CODE);*/
-                                
-            -- INI
              Begin
             -- seleccionamos el dato suplementario de SCBCRSE
                 SELECT  decode(datasu.gorsdav_value.gettypeName(),
@@ -265,8 +256,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
             Exception WHEN OTHERS THen
               v_id_master_bs:= NULL;
             end;
-            
-            -- FIN
             
                                 
             Begin
@@ -410,7 +399,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
        -- se reemplaza el path null a cadena vacía
        l_json := REPLACE(l_json, '"Path":null', '"Path":""');
             
-    dbms_output.put_line('mensaje 3');
                 ------------------------------------------------------------------
                 -- Registrar solicitud
                 ------------------------------------------------------------------
@@ -434,7 +422,7 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
             END IF;
         
           
-           PKG_INT_BRIPACE_TERM.p_registra_error_log(
+           PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
             p_business_line => 'ONLINE',
             p_op_type       => 'CREATE_NRC',
             p_term_code     => r.SZRSSBP_TERM_CODE,
@@ -545,30 +533,6 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
                        SZRSSBP_STATE_DET = v_error
                      WHERE ROWID = r.rid;
     
-                   /* INSERT INTO integracion.itzbgsp (
-                        business_line,
-                        request,
-                        response,
-                        create_date,
-                        request_date,
-                        response_date,
-                        op_type,
-                        status
-                    )
-                    VALUES (
-                        'ONLINE',
-                        l_json,
-                        JSON_OBJECT(
-                            'error' VALUE SQLERRM
-                            RETURNING CLOB
-                        ),
-                        SYSDATE,
-                        SYSDATE,
-                        SYSDATE,
-                        'CREATE_TERM',
-                        'FAIL'
-                    );*/
-    
             END;
     
         END LOOP;
@@ -577,7 +541,7 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
     dbms_output.put_line('mensaje 5');
     END p_registra_nrc_int;
     
-    PROCEDURE p_insert_itzsupl iS
+    PROCEDURE p_insert_itzsupl(p_id_maestro NUMBER) iS
         r_pk_parenttab    gobsdtb.gobsdtb_pk_dynsql%TYPE;
         v_rid              varchar2(18):=null;
         r_gorsdav_rowid   varchar2(18):=null;
@@ -595,7 +559,8 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
         INNER JOIN SZRSSBP B
                ON B.SZRSSBP_ID_MAESTRO = A.ITZSUPL_ID_MAESTRO
        WHERE B.SZRSSBP_STATE = 'SEND'
-         AND ITZSUPL_VALOR IS NOT NULL;
+         AND ITZSUPL_VALOR IS NOT NULL
+         AND SZRSSBP_ID_MAESTRO = p_id_maestro;
     
     BEGIN
    
@@ -677,7 +642,7 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
            WHEN OTHERS THEN
              v_error_message:= 'Error en la insercion de los datos suplementarios en tabla SSBSECT del atributo ID_LMS_BRIGHTSPACE';
            -- LOG DE ERRORES
-               PKG_INT_BRIPACE_TERM.p_registra_error_log(
+               PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
                 p_business_line => 'ONLINE',
                 p_op_type       => 'CREATE_NRC_SUPL',
                 p_term_code     => i.term_code,
@@ -691,24 +656,20 @@ create or replace PACKAGE BODY                PKG_INT_BRIPACE_NRC AS
            
          END;
            
-          UPDATE  ITZBGSP 
-            SET STATUS = 'COMPLETED'
-          where STATUS='PROCESSED_OK'
-            and OP_TYPE = 'CREATE_NRC'
-            and ID= I.id_maestro;
-            
-          UPDATE SZRSSBP
-            SET SZRSSBP_STATE = 'APPLIED'
-            WHERE SZRSSBP_STATE = 'SEND'
-              AND SZRSSBP_TERM_CODE = i.term_code
-              AND SZRSSBP_CRN = i.crn
-              AND SZRSSBP_ID_MAESTRO = i.id_maestro;
+            PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_ESTADO_ITZBGSP( i.ID_MAESTRO, 'CREATE_NRC', 'COMPLETED_OK'); 
+                         
+            PKG_INT_BRIPACE_UTIL.P_ACTUALIZA_INTERMEDIA_STATE(
+                P_TIPO       => 'CREATE_NRC',
+                P_ID_MAESTRO => I.ID_MAESTRO,
+                P_STATE_OLD  => 'SEND',
+                P_STATE      => 'APPLIED'
+            );
               
               
            IF SQL%ROWCOUNT = 1 THEN   
              v_error_message:= 'NRC creado correctamente';
              
-           PKG_INT_BRIPACE_TERM.p_registra_error_log(
+           PKG_INT_BRIPACE_UTIL.p_registra_error_log_uk(
                 p_business_line => 'ONLINE',
                 p_op_type       => 'CREATE_NRC',
                 p_term_code     => i.term_code,
